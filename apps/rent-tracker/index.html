@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07070f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Rent">
+  <title>Rent Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css?v=2.1">
+</head>
+<body>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <div id="storage-banner" class="callout banner" role="alert" hidden>
+    <p id="storage-message"></p>
+    <button class="btn small" data-action="reload">Reload saved data</button>
+  </div>
+  <div id="update-banner" class="callout banner" hidden>
+    <p>A new version is ready. Finish any open form, then update.</p>
+    <button class="btn small" data-action="apply-update">Update app</button>
+  </div>
+  <section id="recovery" hidden>
+    <h1>Recover saved data</h1>
+    <p id="recovery-message" class="hint intro"></p>
+    <p class="hint">Your original saved record has not been replaced. Download it before attempting a restore. If browser storage is blocked, allow storage and reload.</p>
+    <button class="btn" data-action="raw">Download original saved data</button>
+    <button class="btn" data-action="import">Import a valid backup</button>
+    <button class="btn" data-action="snapshot">Restore recovery snapshot</button>
+  </section>
+  <main id="app">
+    <section id="view-home" class="view"></section>
+    <section id="view-weeks" class="view" hidden></section>
+    <section id="view-settings" class="view" hidden></section>
+  </main>
+
+  <nav class="tabbar" aria-label="Main navigation">
+    <button class="tab active" data-view="home" aria-current="page" aria-controls="view-home">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="tab" data-view="weeks" aria-controls="view-weeks">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+      <span>Weeks</span>
+    </button>
+    <button class="tab" data-view="settings" aria-controls="view-settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <dialog id="sheet" aria-labelledby="sheet-title">
+    <form id="sheet-form" method="dialog"></form>
+  </dialog>
+
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+
+  <section id="print-ledger" aria-label="Printable rent ledger"></section>
+  <noscript>This app needs JavaScript to display and save your rent ledger.</noscript>
+  <script src="app.js?v=2.1"></script>
+</body>
+</html>
