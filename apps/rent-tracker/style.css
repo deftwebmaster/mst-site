@@ -166,6 +166,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 input[aria-invalid=true] { border-color: var(--rose); }
 dialog#sheet { max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; }
 #print-ledger { display: none; }
+.receipt-field { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin: 0 0 16px; min-width: 0; }
+.receipt-field legend { color: var(--muted); font-size: 13px; padding: 0 4px; }
+.receipt-field .btn-row { flex-wrap: wrap; }
+.receipt-field .btn-row .btn { min-width: 110px; }
+#receipt-status { overflow-wrap: anywhere; }
+button:disabled { opacity: .6; cursor: wait; }
+dialog#receipt-viewer { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 16px; width: calc(100% - 24px); max-width: 720px; max-height: calc(100dvh - 24px); overflow-y: auto; }
+#receipt-viewer::backdrop { background: rgba(0,0,0,.75); }
+#receipt-title { margin: 0 0 16px; font-size: 18px; text-transform: none; letter-spacing: normal; color: var(--text); overflow-wrap: anywhere; }
+#receipt-content img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+#receipt-content canvas { display: block; width: 100%; height: auto; background: white; margin-top: 10px; }
+#receipt-content details { margin-top: 12px; font-size: 14px; overflow-wrap: anywhere; }
+#receipt-content details p { margin-top: 8px; white-space: pre-wrap; }
+a.btn { text-decoration: none; }
 @media (max-width: 350px) {
   body { padding-left: 12px; padding-right: 12px; }
   .stats { grid-template-columns: 1fr; }

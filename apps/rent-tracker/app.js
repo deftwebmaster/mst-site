@@ -39,8 +39,18 @@ function fmtMoney(c) {
 const uid = () => crypto.randomUUID();
 const STORAGE_KEY = 'rentTracker.v1'; // Retain the existing key for migration.
 const SNAPSHOT_KEY = 'rentTracker.recovery.v2';
+const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
+const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
+function receiptMetadata(r) {
+  if (r == null) return null;
+  if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(r.id) ||
+      typeof r.name !== 'string' || !r.name.trim() || r.name.length > 180 ||
+      !['image/jpeg','image/png','image/webp','application/pdf'].includes(r.type) ||
+      !Number.isInteger(r.size) || r.size < 1 || r.size > MAX_RECEIPT_BYTES) throw new Error('Invalid receipt attachment.');
+  return {id:r.id,name:r.name,type:r.type,size:r.size};
+}
 const DEFAULT_STATE = {
-  version: 2, moveIn: '2026-10-02', dueDay: 5,
+  version: 3, moveIn: '2026-10-02', dueDay: 5,
   phase1Rate: 98, phase2Rate: 133, phase2Start: null,
   rateChanges: [], arrangement: { date: null, note: '' }, lastBackup: null,
   charges: [{ id: 'movein-fee', date: '2026-10-02', amount: 50, label: 'Move-in fee' }],
@@ -51,12 +61,13 @@ const DEFAULT_STATE = {
 function normalizeState(s) {
   const fail = message => { throw new Error(message); };
   if (!s || typeof s !== 'object' || Array.isArray(s)) fail('Not a Rent Tracker ledger.');
-  if (s.version !== 1 && s.version !== 2) fail('Unsupported backup version.');
+  if (![1,2,3].includes(s.version)) fail('Unsupported backup version.');
   if (!isDate(s.moveIn)) fail('Move-in date must be a real date from 1900 through 2099.');
   if (!validMoney(s.phase1Rate) || !validMoney(s.phase2Rate)) fail('Weekly rates must be positive dollar amounts with at most two decimals (maximum $1,000,000).');
   if (s.phase2Start !== null && s.phase2Start !== undefined && !isDate(s.phase2Start)) fail('Invalid Phase 2 date.');
   if (s.phase2Start && s.phase2Start < s.moveIn) fail('Phase 2 cannot start before move-in.');
   const ids = new Set();
+  const receiptIDs = new Map();
   function records(list, type) {
     if (!Array.isArray(list) || list.length > 10000) fail(`Invalid ${type} list (maximum 10,000 records).`);
     return list.map((r, i) => {
@@ -70,7 +81,12 @@ function normalizeState(s) {
       const key = type === 'Payment' ? 'note' : 'label';
       const value = r[key] ?? (key === 'note' ? '' : 'Charge');
       if (typeof value !== 'string' || value.length > 500 || (key === 'label' && !value.trim())) fail(`Invalid ${key} in ${where}.`);
-      return { id: r.id, date: r.date, amount: r.amount, [key]: value.trim() };
+      const receipt = type === 'Payment' ? receiptMetadata(r.receipt) : null;
+      if(receipt) {
+        if(receiptIDs.has(receipt.id)&&receiptIDs.get(receipt.id)!==JSON.stringify(receipt))fail('Conflicting receipt metadata.');
+        receiptIDs.set(receipt.id,JSON.stringify(receipt));
+      }
+      return { id: r.id, date: r.date, amount: r.amount, [key]: value.trim(), ...(type === 'Payment' ? {receipt} : {}) };
     });
   }
   const dueDay = s.version === 1 ? weekday(s.moveIn) : s.dueDay;
@@ -90,7 +106,7 @@ function normalizeState(s) {
   const lastBackup = s.version === 1 ? null : s.lastBackup;
   if (lastBackup !== null && !isDate(lastBackup)) fail('Invalid last backup date.');
   return {
-    version: 2, moveIn: s.moveIn, dueDay,
+    version: 3, moveIn: s.moveIn, dueDay,
     phase1Rate: s.phase1Rate, phase2Rate: s.phase2Rate, phase2Start: s.phase2Start || null,
     rateChanges, arrangement: { date: a.date, note: a.note.trim() }, lastBackup,
     charges: records(s.charges ?? (s.version === 1 ? [] : null), 'Charge'),
@@ -116,11 +132,11 @@ let state = loadState();
 
 // Write the recovery snapshot before the ledger. Failed writes leave both the
 // displayed state and the original ledger intact. Check for stale tabs first.
-function saveState(next, { snapshot = true } = {}) {
+function saveState(next, { snapshot = true, expectedRaw = storedRaw } = {}) {
   if (!next) return false;
   try {
     const validated = normalizeState(next);
-    if (localStorage.getItem(STORAGE_KEY) !== storedRaw) {
+    if (storedRaw !== expectedRaw || localStorage.getItem(STORAGE_KEY) !== storedRaw) {
       externalChange = true;
       throw new Error('Data changed in another tab. Reload the latest data before saving.');
     }
@@ -175,12 +191,26 @@ function compute(today = todayStr()) {
   const charges = state.charges.filter(c => c.date <= today)
     .map(c => ({ kind: 'charge', date: c.date, amount: cents(c.amount), label: c.label, id: c.id }));
   const obligations = [...charges, ...weeks].sort(obligationSort);
-  const totalPaid = state.payments.filter(p => p.date <= today).reduce((sum, p) => sum + cents(p.amount), 0);
+  const payments = state.payments.filter(p => p.date <= today).sort((a,b)=>a.date.localeCompare(b.date));
+  const totalPaid = payments.reduce((sum, p) => sum + cents(p.amount), 0);
   const totalOwed = obligations.reduce((sum, o) => sum + o.amount, 0);
   let pool = totalPaid;
+  let paymentIndex = 0;
+  let paymentRemaining = payments.length ? cents(payments[0].amount) : 0;
   const apply = o => {
     o.applied = Math.min(pool, o.amount);
     pool -= o.applied;
+    o.allocations = [];
+    let remaining = o.applied;
+    while (remaining > 0 && paymentIndex < payments.length) {
+      const amount = Math.min(remaining, paymentRemaining);
+      if (amount) o.allocations.push({paymentId:payments[paymentIndex].id,amount});
+      remaining -= amount; paymentRemaining -= amount;
+      if (!paymentRemaining) {
+        paymentIndex++;
+        paymentRemaining = paymentIndex < payments.length ? cents(payments[paymentIndex].amount) : 0;
+      }
+    }
     o.status = o.applied === o.amount ? 'paid' : o.applied ? 'partial' : o.upcoming ? 'upcoming' : 'unpaid';
   };
   obligations.forEach(apply);
@@ -222,6 +252,115 @@ function csvLedger(asOf = todayStr()) {
     .map(r => r.map(cell).join(',')).join('\r\n');
 }
 
+// Receipts live as blobs in IndexedDB, outside the small localStorage ledger.
+// Files are immutable: new uploads/imports get new IDs, preserving snapshots.
+let receiptDatabase;
+function openReceiptDatabase() {
+  if (receiptDatabase) return receiptDatabase;
+  receiptDatabase = new Promise((resolve,reject)=>{
+    if (!globalThis.indexedDB) { reject(new Error('Receipt storage is unavailable in this browser.')); return; }
+    const request = indexedDB.open('rentTracker.receipts.v1',1);
+    request.onupgradeneeded=()=>request.result.createObjectStore('files',{keyPath:'id'});
+    request.onerror=()=>reject(request.error || new Error('Could not open receipt storage.'));
+    request.onblocked=()=>reject(new Error('Close other Rent Tracker tabs, then try attaching the receipt again.'));
+    request.onsuccess=()=>{
+      const db=request.result;
+      db.onversionchange=()=>{db.close();receiptDatabase=null;};
+      resolve(db);
+    };
+  }).catch(e=>{receiptDatabase=null;throw e;});
+  return receiptDatabase;
+}
+async function receiptFile(id) {
+  const db=await openReceiptDatabase();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('files','readonly'),request=tx.objectStore('files').get(id);
+    request.onsuccess=()=>resolve(request.result?.blob || null);
+    request.onerror=()=>reject(request.error);
+    tx.onabort=()=>reject(tx.error || new Error('Receipt read failed.'));
+  });
+}
+async function storeReceiptFiles(files) {
+  if (!files.length) return;
+  const db=await openReceiptDatabase();
+  await new Promise((resolve,reject)=>{
+    const tx=db.transaction('files','readwrite');
+    for (const f of files) tx.objectStore('files').add({...f,createdAt:Date.now()});
+    tx.oncomplete=resolve;
+    tx.onerror=tx.onabort=()=>reject(tx.error || new Error('Could not save the receipt. Device storage may be full.'));
+  });
+}
+async function assertReceiptBytes(blob,type) {
+  const b=new Uint8Array(await blob.slice(0,12).arrayBuffer());
+  const text=String.fromCharCode(...b);
+  const valid=type==='application/pdf' ? text.startsWith('%PDF-') :
+    type==='image/jpeg' ? b[0]===255&&b[1]===216&&b[2]===255 :
+    type==='image/png' ? b[0]===137&&text.slice(1,4)==='PNG' :
+    type==='image/webp' ? text.startsWith('RIFF')&&text.slice(8,12)==='WEBP' : false;
+  if (!valid) throw new Error('The receipt contents do not match its file type.');
+}
+async function prepareReceipt(file) {
+  if (!file?.size || file.size > MAX_RECEIPT_BYTES) throw new Error('Choose a photo or PDF up to 10 MB.');
+  let blob, name;
+  if (file.type==='application/pdf' || /\.pdf$/i.test(file.name)) {
+    await assertReceiptBytes(file,'application/pdf');
+    blob=new Blob([file],{type:'application/pdf'}); name=file.name || 'Receipt.pdf';
+  } else {
+    if (!file.type.startsWith('image/') || file.type==='image/svg+xml') throw new Error('Choose a photo or PDF, not another file type.');
+    const url=URL.createObjectURL(file);
+    try {
+      const img=new Image();
+      await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new Error('This photo format could not be read. Try a JPEG or PNG.'));img.src=url;});
+      const scale=Math.min(1,2000/Math.max(img.naturalWidth,img.naturalHeight));
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+      const context=canvas.getContext('2d');
+      if(!context)throw new Error('Photo processing is unavailable. Try a PDF instead.');
+      context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);context.drawImage(img,0,0,canvas.width,canvas.height);
+      blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.85));
+      if(!blob)throw new Error('Could not prepare this photo. Try a smaller image.');
+      name=(file.name.replace(/\.[^.]+$/,'') || 'Receipt')+'.jpg';
+    } finally { URL.revokeObjectURL(url); }
+  }
+  const metadata=receiptMetadata({id:uid(),name:name.slice(-180),type:blob.type,size:blob.size});
+  return {...metadata,blob};
+}
+function receiptReferences(ledger) {
+  return [...new Map(ledger.payments.filter(p=>p.receipt).map(p=>[p.receipt.id,p.receipt])).values()];
+}
+async function makeBackup(ledger) {
+  const attachments=[];
+  let total=JSON.stringify(ledger).length;
+  for(const r of receiptReferences(ledger)) {
+    const blob=await receiptFile(r.id);
+    if(!blob || blob.size!==r.size || blob.type!==r.type)throw new Error(`Receipt "${r.name}" is missing. Restore it from a backup or replace/remove it on the payment before exporting.`);
+    total+=Math.ceil(blob.size/3)*4;
+    if(total>MAX_BACKUP_BYTES-1024*1024)throw new Error('The backup exceeds 200 MB. Download and archive older receipts separately before removing their attachments.');
+    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=()=>reject(new Error('Could not read a receipt for backup.'));reader.readAsDataURL(blob);});
+    attachments.push({...r,data});
+  }
+  return {app:'rent-tracker',exportedAt:new Date().toISOString(),data:ledger,attachments};
+}
+async function decodeBackupReceipts(parsed,ledger) {
+  const references=receiptReferences(ledger),list=parsed.attachments ?? [];
+  if(!Array.isArray(list) || list.length!==references.length)throw new Error('The backup must contain every attached receipt exactly once.');
+  const files=[],seen=new Set();
+  for(const item of list) {
+    const r=receiptMetadata(item),reference=references.find(x=>x.id===r?.id);
+    if(!r||!reference||seen.has(r.id)||JSON.stringify(reference)!==JSON.stringify(r))throw new Error('Receipt metadata does not match the payment.');
+    seen.add(r.id);
+    if(typeof item.data!=='string'||item.data.length!==4*Math.ceil(r.size/3)||!/^[A-Za-z0-9+/]*={0,2}$/.test(item.data))throw new Error('Invalid receipt data in backup.');
+    let bytes;
+    try{bytes=Uint8Array.from(atob(item.data),c=>c.charCodeAt(0));}catch{throw new Error('Unreadable receipt data in backup.');}
+    if(bytes.length!==r.size)throw new Error('Receipt size does not match the backup.');
+    const blob=new Blob([bytes],{type:r.type});await assertReceiptBytes(blob,r.type);
+    const replacement={...r,id:uid()};
+    for(const p of ledger.payments)if(p.receipt?.id===r.id)p.receipt={...replacement};
+    files.push({...replacement,blob});
+  }
+  return files;
+}
+
 // ---------- Rendering ----------
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -232,6 +371,7 @@ let plannerDate = todayStr();
 let plannerAmount = '';
 let pendingWorker = null;
 let sheetReturnFocus = null;
+let sheetBusy = false;
 function announce(message) { const box = $('#notice'); if (box) box.textContent = message; }
 function render() {
   $('#storage-banner').hidden = !storageError && !externalChange;
@@ -280,9 +420,30 @@ function renderWeeks(c) {
   const futureCharges = state.charges.filter(ch => ch.date > c.today).map(ch => ({...ch,kind:'charge',amount:cents(ch.amount),status:'upcoming'}));
   const items = [...c.obligations, ...c.upcoming, ...futureCharges].sort((a,b) => -obligationSort(a,b));
   $('#view-weeks').innerHTML = `<h1>Weeks</h1>
-    <p class="hint intro">Rent is due each ${DAYS[state.dueDay]} for the week ahead. Payments cover the oldest rent and charges first.${weekday(state.moveIn) !== state.dueDay ? ' The first partial week is prorated by day.' : ''}</p>
+    <p class="hint intro">Rent is due each ${DAYS[state.dueDay]} for the week ahead. Payments cover the oldest rent and charges first. Tap a week to see its payments and receipts.${weekday(state.moveIn) !== state.dueDay ? ' The first partial week is prorated by day.' : ''}</p>
     <div class="btn-row"><button class="btn small" data-action="csv">Export CSV</button><button class="btn small" data-action="print">Print ledger</button></div>
-    <div class="list ledger-list">${items.map(o => `<div class="row"><div><p class="main">${o.kind === 'charge' ? esc(o.label) : `${fmtShort(o.date)} – ${fmtShort(addDays(o.end,-1))}${o.date === state.moveIn ? ' · move-in' : ''}`}</p><p class="meta">${fmtMoney(o.amount)} · ${o.kind === 'charge' ? fmtDate(o.date) : o.phase === 'split' ? 'Phase 1 / 2 split' : `Phase ${o.phase}${o.days < 7 ? ' · partial week' : ''}`}</p></div>${statusBadge(o)}</div>`).join('')}</div>`;
+    <div class="list ledger-list">${items.map(o => {
+      const isWeek=o.kind==='week';
+      const hasReceipt=isWeek&&o.allocations.some(a=>state.payments.find(p=>p.id===a.paymentId)?.receipt);
+      return `<${isWeek?'button':'div'} class="row" ${isWeek?`data-action="week-detail" data-date="${o.date}"`:''}><div><p class="main">${!isWeek ? esc(o.label) : `${fmtShort(o.date)} – ${fmtShort(addDays(o.end,-1))}${o.date === state.moveIn ? ' · move-in' : ''}`}</p><p class="meta">${fmtMoney(o.amount)} · ${!isWeek ? fmtDate(o.date) : o.phase === 'split' ? 'Phase 1 / 2 split' : `Phase ${o.phase}${o.days < 7 ? ' · partial week' : ''}`}${hasReceipt?' · Receipt attached':''}</p></div>${statusBadge(o)}</${isWeek?'button':'div'}>`;
+    }).join('')}</div>`;
+}
+function weekDetail(date) {
+  const c=compute(),w=[...c.weeks,...c.upcoming].find(x=>x.date===date);
+  if(!w)return;
+  openSheet(`${fmtShort(w.date)} – ${fmtShort(addDays(w.end,-1))}`,
+    `<p class="hint intro">Rent ${fmtMoney(w.amount)} · ${fmtMoney(w.applied)} paid${w.amount>w.applied?` · ${fmtMoney(w.amount-w.applied)} remaining`:''}</p>
+    ${w.allocations.length?w.allocations.map(a=>{
+      const p=state.payments.find(p=>p.id===a.paymentId);
+      return `<div class="callout"><strong>${fmtMoney(a.amount)} applied to this week</strong><p>${fmtMoney(cents(p.amount))} payment · ${fmtDate(p.date)}</p>${p.note?`<p>${esc(p.note)}</p>`:''}
+      ${p.receipt?`<p class="field-note">${esc(p.receipt.name)}</p><button class="btn small" type="button" data-action="view-receipt" data-id="${esc(p.id)}">View receipt</button>`:'<p class="field-note">No receipt attached.</p>'}
+      <button class="btn small" type="button" data-action="edit-payment" data-id="${esc(p.id)}">${p.receipt?'Edit payment / receipt':'Add receipt / edit payment'}</button></div>`;
+    }).join(''):'<p class="hint intro">No payments have been applied to this week yet. Attach a receipt when logging a payment.</p>'}
+    <p class="field-note">Payments are applied oldest first. A payment covering several weeks has the same receipt available on each of those weeks.</p>`,()=>null,null,'Close');
+  sheetForm.onsubmit=e=>{e.preventDefault();sheet.close();};
+  sheetForm.querySelector('[data-cancel]').hidden=true;
+  const receipts=[...new Map(w.allocations.map(a=>state.payments.find(p=>p.id===a.paymentId)?.receipt).filter(Boolean).map(r=>[r.id,r])).values()];
+  if(receipts.length===1)viewReceipt(receipts[0]);
 }
 function renderSettings() {
   $('#view-settings').innerHTML = `<h1>Settings</h1>
@@ -301,7 +462,7 @@ function renderSettings() {
       <p class="field-note">Last backup export: ${state.lastBackup ? fmtDate(state.lastBackup) : 'Not yet exported'}. An export opens sharing or downloads a file; check that you kept it.</p>
       <div class="btn-row"><button class="btn" data-action="export">Export backup</button><button class="btn" data-action="import">Import backup</button></div>
       <button class="btn small" data-action="snapshot">Restore recovery snapshot</button>
-    </div><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.1 · Updates never require clearing your saved data.</p>`;
+    </div><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.4 · Updates never require clearing your saved data.</p>`;
 }
 function renderPrint() {
   const c = compute();
@@ -322,19 +483,29 @@ function formError(message, fieldName) {
   if (input) { input.setAttribute('aria-invalid','true'); input.focus(); }
 }
 function openSheet(title, html, onSubmit, onDelete, button='Save') {
+  if(sheet.open)throw new Error('Close the current form before opening another.');
+  sheetBusy=false;
   sheetReturnFocus = document.activeElement;
   sheetForm.oninput = e => {
     $('#form-error').hidden = true;
     e.target.removeAttribute('aria-invalid');
   };
   sheetForm.innerHTML = `<h2 id="sheet-title">${title}</h2>${html}<p class="error" id="form-error" role="alert" hidden></p><button class="btn primary" type="submit">${button}</button><div class="btn-row">${onDelete ? '<button class="btn danger" type="button" data-delete>Delete</button>' : ''}<button class="btn" type="button" data-cancel>Cancel</button></div>`;
-  sheetForm.onsubmit = e => {
+  sheetForm.onsubmit = async e => {
     e.preventDefault();
-    const next = structuredClone(state);
-    const result = onSubmit(new FormData(sheetForm), next);
-    if (result) return formError(result.message || result, result.field);
-    if (!saveState(next)) { formError(storageError); renderStorageBanner(); return; }
-    sheet.close(); render(); announce('Saved on this device.');
+    if(sheetBusy)return;
+    sheetBusy=true;
+    const fd=new FormData(sheetForm);
+    sheetForm.querySelectorAll('button,input,select').forEach(b=>b.disabled=true);
+    try {
+      const originalRaw=storedRaw;
+      const next = structuredClone(state);
+      const result = await onSubmit(fd, next);
+      if (result) return formError(result.message || result, result.field);
+      if (!saveState(next,{expectedRaw:originalRaw})) { formError(storageError); renderStorageBanner(); return; }
+      sheet.close(); render(); announce('Saved on this device.');
+    } catch(e) {formError(`Not saved. ${e.message}`);}
+    finally {sheetBusy=false;sheetForm.querySelectorAll('button,input,select').forEach(b=>b.disabled=false);}
   };
   sheetForm.querySelector('[data-cancel]').onclick=()=>sheet.close();
   const del=sheetForm.querySelector('[data-delete]');
@@ -350,19 +521,133 @@ function renderStorageBanner() {
   $('#storage-banner').hidden=false; $('#storage-message').textContent=storageError;
 }
 sheet.addEventListener('close',()=>{ if (sheetReturnFocus?.isConnected) sheetReturnFocus.focus(); else $('.tab.active')?.focus(); });
+sheet.addEventListener('cancel',e=>{if(sheetBusy)e.preventDefault();});
+function editPayment(id) {
+  const open=()=>paymentSheet(state.payments.find(p=>p.id===id));
+  if(sheet.open){sheet.addEventListener('close',open,{once:true});sheet.close();}else open();
+}
 function paymentSheet(existing) {
   const p=existing || {date:todayStr(),amount:rateOn(todayStr(),compute().phaseNow)/100,note:''};
+  let receipt=p.receipt || null,staged=null,processing=false;
   openSheet(existing ? 'Edit payment' : 'Log payment',
     field('Amount','amount',p.amount,'text','inputmode="decimal" required') +
     field('Date paid','date',p.date,'date',`min="${state.moveIn}" max="${todayStr()}" required`) +
-    field('Note (optional)','note',p.note,'text','maxlength="500"') + '<p class="field-note">Log money already paid. Use the payday planner for future payments.</p>',
-    (fd,next)=>{
+    field('Note (optional)','note',p.note,'text','maxlength="500"') +
+    `<fieldset class="receipt-field"><legend>Receipt (optional)</legend>
+      <p class="field-note">Take a photo, choose a photo, or attach a PDF. Up to 10 MB. Photos are resized for storage.</p>
+      <div class="btn-row"><button class="btn small" type="button" id="take-receipt">Take photo</button><button class="btn small" type="button" id="choose-receipt">Upload photo / PDF</button></div>
+      <input id="receipt-camera" type="file" accept="image/*" capture="environment" hidden>
+      <input id="receipt-upload" type="file" accept="image/*,application/pdf,.pdf" hidden>
+      <p id="receipt-status" class="field-note" role="status"></p>
+      <div class="btn-row"><button class="btn small" type="button" id="preview-receipt">View receipt</button><button class="btn small danger" type="button" id="remove-receipt">Remove receipt</button></div>
+    </fieldset><p class="field-note">Log money already paid. Use the payday planner for future payments.</p>`,
+    async (fd,next)=>{
       const amount=parseAmount(fd.get('amount')),date=fd.get('date');
       if (!amount) return {message:'Enter $0.01 to $1,000,000, with at most two decimal places.',field:'amount'};
       if (!isDate(date) || date < state.moveIn || date > todayStr()) return {message:'Choose a real date between move-in and today.',field:'date'};
-      const value={id:existing?.id || uid(),amount,date,note:String(fd.get('note')).trim()};
+      if(processing)return 'Wait for the receipt to finish processing.';
+      const value={id:existing?.id || uid(),amount,date,note:String(fd.get('note')).trim(),receipt};
+      if(staged) {
+        const stored=await receiptFile(staged.id);
+        if(!stored)await storeReceiptFiles([staged]);
+      }
       if(existing) next.payments=next.payments.map(x=>x.id===existing.id ? value : x); else next.payments.push(value);
     },existing ? next=>{next.payments=next.payments.filter(x=>x.id!==existing.id)} : null,existing?'Save':'Add payment');
+  const status=$('#receipt-status'),preview=$('#preview-receipt'),remove=$('#remove-receipt');
+  const refresh=()=>{
+    status.textContent=processing?'Preparing receipt…':receipt?`${receipt.name} · ${(receipt.size/1024).toFixed(0)} KB · ${staged?'ready to save':'saved'}`:'No receipt attached.';
+    preview.hidden=remove.hidden=!receipt;
+    sheetForm.querySelector('[type=submit]').disabled=processing;
+    $('#take-receipt').disabled=$('#choose-receipt').disabled=processing;
+  };
+  const attach=async e=>{
+    const file=e.target.files[0];e.target.value='';if(!file||processing)return;
+    processing=true;refresh();
+    try {
+      const prepared=await prepareReceipt(file);
+      if(!sheet.open||!status.isConnected)return;
+      staged=prepared;receipt=receiptMetadata(prepared);
+    }catch(e){if(status.isConnected)formError(e.message);}
+    finally{processing=false;if(status.isConnected)refresh();}
+  };
+  $('#take-receipt').onclick=()=>$('#receipt-camera').click();
+  $('#choose-receipt').onclick=()=>$('#receipt-upload').click();
+  $('#receipt-camera').onchange=$('#receipt-upload').onchange=attach;
+  preview.onclick=()=>viewReceipt(receipt,staged?.blob);
+  remove.onclick=()=>{receipt=null;staged=null;refresh();};
+  refresh();
+}
+const receiptViewer=$('#receipt-viewer');
+let receiptViewURL=null,receiptViewToken=null,pdfLoadingTask=null;
+receiptViewer.addEventListener('close',()=>{
+  receiptViewToken=null;
+  if(pdfLoadingTask){pdfLoadingTask.destroy().catch(()=>{});pdfLoadingTask=null;}
+  if(receiptViewURL)URL.revokeObjectURL(receiptViewURL);
+  receiptViewURL=null;$('#receipt-content').replaceChildren();
+});
+$('#close-receipt').onclick=()=>receiptViewer.close();
+async function viewReceipt(receipt,preparedBlob) {
+  if(!receipt)return;
+  if(pdfLoadingTask){pdfLoadingTask.destroy().catch(()=>{});pdfLoadingTask=null;}
+  const token=receiptViewToken={};
+  if(receiptViewURL)URL.revokeObjectURL(receiptViewURL);
+  receiptViewURL=null;
+  $('#receipt-title').textContent=receipt.name;
+  $('#receipt-content').textContent='Opening receipt…';
+  $('#download-receipt').hidden=$('#open-receipt').hidden=true;
+  if(!receiptViewer.open)receiptViewer.showModal();
+  try {
+    const blob=preparedBlob || await receiptFile(receipt.id);
+    if(!blob)throw new Error('This receipt file is missing from this device. Import a backup that includes it, or replace it on the payment.');
+    await assertReceiptBytes(blob,receipt.type);
+    if(!receiptViewer.open||receiptViewToken!==token)return;
+    receiptViewURL=URL.createObjectURL(blob);
+    const open=$('#open-receipt');open.href=receiptViewURL;open.hidden=false;
+    const download=$('#download-receipt');download.hidden=false;
+    download.onclick=()=>downloadFile(new File([blob],receipt.name,{type:receipt.type}));
+    if(receipt.type==='application/pdf')await renderReceiptPDF(blob,token);
+    else {
+      const element=document.createElement('img');element.src=receiptViewURL;element.alt=`Receipt: ${receipt.name}`;
+      element.onerror=()=>{if(receiptViewToken===token)$('#receipt-content').textContent='The photo could not be displayed. You can still download the original file.';};
+      $('#receipt-content').replaceChildren(element);
+    }
+  }catch(e){if(receiptViewToken===token)$('#receipt-content').textContent=e.message;}
+}
+async function renderReceiptPDF(blob,token) {
+  const pdfjs=await import('./vendor/pdfjs/pdf.min.mjs');
+  if(receiptViewToken!==token)return;
+  pdfjs.GlobalWorkerOptions.workerSrc=new URL('vendor/pdfjs/pdf.worker.min.mjs',document.baseURI).href;
+  const base=new URL('vendor/pdfjs/',document.baseURI).href;
+  const data=new Uint8Array(await blob.arrayBuffer());
+  if(receiptViewToken!==token)return;
+  pdfLoadingTask=pdfjs.getDocument({data,
+    cMapUrl:base+'cmaps/',cMapPacked:true,standardFontDataUrl:base+'standard_fonts/',
+    wasmUrl:base+'wasm/',iccUrl:base+'iccs/',canvasMaxAreaInBytes:16000000});
+  const pdf=await pdfLoadingTask.promise;
+  if(receiptViewToken!==token)return;
+  $('#receipt-content').innerHTML='<div class="pdf-pages"><div class="btn-row"><button type="button" class="btn small" id="pdf-previous">Previous page</button><button type="button" class="btn small" id="pdf-next">Next page</button></div><p id="pdf-page-label" class="field-note" role="status"></p><canvas id="pdf-page" role="img" aria-label="Receipt page"></canvas><details id="pdf-text" hidden><summary>Receipt text</summary><p></p></details></div>';
+  let current=1,busy=false;
+  const previous=$('#pdf-previous'),next=$('#pdf-next'),label=$('#pdf-page-label'),canvas=$('#pdf-page'),text=$('#pdf-text');
+  const draw=async number=>{
+    if(busy||receiptViewToken!==token)return;
+    busy=true;previous.disabled=next.disabled=true;label.textContent=`Opening page ${number} of ${pdf.numPages}…`;
+    try {
+      const page=await pdf.getPage(number);
+      if(receiptViewToken!==token)return;
+      const original=page.getViewport({scale:1});
+      const desired=Math.min(1400,Math.max(600,$('#receipt-content').clientWidth*2));
+      const viewport=page.getViewport({scale:Math.min(desired/original.width,Math.sqrt(4000000/(original.width*original.height)))});
+      canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+      await page.render({canvas,canvasContext:canvas.getContext('2d'),viewport}).promise;
+      if(receiptViewToken!==token)return;
+      current=number;label.textContent=`Page ${current} of ${pdf.numPages}`;canvas.setAttribute('aria-label',`Receipt page ${current} of ${pdf.numPages}`);
+      const extracted=await page.getTextContent();
+      text.querySelector('p').textContent=extracted.items.map(i=>i.str||'').join(' ');text.hidden=!text.querySelector('p').textContent.trim();
+    }catch(e){if(receiptViewToken===token)label.textContent='This page could not be rendered. Open or download the original file.';}
+    finally {busy=false;if(receiptViewToken===token){previous.disabled=current<=1;next.disabled=current>=pdf.numPages;}}
+  };
+  previous.onclick=()=>draw(current-1);next.onclick=()=>draw(current+1);
+  await draw(1);
 }
 function chargeSheet(existing) {
   const ch=existing || {date:todayStr(),amount:'',label:''};
@@ -437,15 +722,19 @@ function downloadFile(file) {
   setTimeout(()=>URL.revokeObjectURL(url),10000);
 }
 async function exportBackup() {
-  const next={...state,lastBackup:todayStr()};
-  const json=JSON.stringify({app:'rent-tracker',exportedAt:new Date().toISOString(),data:next},null,2);
-  const file=new File([json],`rent-backup-${todayStr()}.json`,{type:'application/json'});
+  const originalRaw=storedRaw;
+  const next={...structuredClone(state),lastBackup:todayStr()};
   try {
+    announce('Preparing backup, including receipts…');
+    const json=JSON.stringify(await makeBackup(next));
+    const file=new File([json],`rent-backup-${todayStr()}.json`,{type:'application/json'});
+    if(file.size>MAX_BACKUP_BYTES)throw new Error('The backup exceeds 200 MB.');
     if(navigator.canShare?.({files:[file]})) {
       try {await navigator.share({files:[file],title:'Rent backup'});}
       catch(e){if(e.name==='AbortError')return;downloadFile(file);}
     } else downloadFile(file);
-    if(saveState(next,{snapshot:false})){render();announce('Backup export opened. Check that you saved the file outside this device.');}
+    if(storedRaw!==originalRaw){announce('Backup export opened for the ledger before your latest edit. Export again to include the latest changes.');return;}
+    if(saveState(next,{snapshot:false,expectedRaw:originalRaw})){render();announce('Backup export opened, including receipts. Check that you saved the file outside this device.');}
     else renderStorageBanner();
   } catch(e){announce(`Backup export failed. ${e.message}`);}
 }
@@ -455,21 +744,28 @@ function parseBackup(text) {
   return normalizeState(parsed.data??parsed);
 }
 async function importBackup(file) {
+  const originalRaw=storedRaw;
   try {
-    if(file.size>5*1024*1024)throw new Error('Backup is too large (maximum 5 MB).');
-    const next=parseBackup(await file.text());
+    if(file.size>MAX_BACKUP_BYTES)throw new Error('Backup is too large (maximum 200 MB).');
+    const text=await file.text(),next=parseBackup(text);
+    const files=await decodeBackupReceipts(JSON.parse(text),next);
     if(!confirm(`Replace this ledger with ${next.payments.length} payments and ${next.charges.length} charges? The current data will be kept as a recovery snapshot.`))return;
-    if(!saveState(next)){render();return;}
+    if(sheet.open)throw new Error('Close the open form before importing a backup.');
+    await storeReceiptFiles(files);
+    if(!saveState(next,{expectedRaw:originalRaw})){render();return;}
     render();announce('Backup restored and saved on this device.');
   }catch(e){announce(`Backup not imported. ${e.message}`);}
 }
-function restoreSnapshot() {
+async function restoreSnapshot() {
+  const originalRaw=storedRaw;
   try {
     const saved=JSON.parse(localStorage.getItem(SNAPSHOT_KEY));
     if(!saved||typeof saved.raw!=='string')throw new Error('No recovery snapshot is available yet.');
     const next=parseBackup(saved.raw);
+    for(const r of receiptReferences(next))if(!await receiptFile(r.id))throw new Error('A receipt in this snapshot is missing. Import a complete backup instead.');
     if(!confirm(`Restore the snapshot from ${saved.savedAt}? Current data will become the new recovery snapshot.`))return;
-    if(saveState(next)){render();announce('Recovery snapshot restored.');}else render();
+    if(!saveState(next,{expectedRaw:originalRaw})){render();return;}
+    render();announce('Recovery snapshot restored.');
   }catch(e){announce(`Snapshot not restored. ${e.message}`);}
 }
 function exportRaw() {
@@ -491,7 +787,9 @@ document.addEventListener('click',e=>{
   const el=e.target.closest('[data-action]');if(!el)return;
   switch(el.dataset.action){
     case 'add-payment':return paymentSheet();
-    case 'edit-payment':return paymentSheet(state.payments.find(p=>p.id===el.dataset.id));
+    case 'edit-payment':return editPayment(el.dataset.id);
+    case 'week-detail':return weekDetail(el.dataset.date);
+    case 'view-receipt':return viewReceipt(state.payments.find(p=>p.id===el.dataset.id)?.receipt);
     case 'add-charge':return chargeSheet();
     case 'edit-charge':return chargeSheet(state.charges.find(p=>p.id===el.dataset.id));
     case 'schedule':return scheduleSheet();

@@ -12,7 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.1">
+  <link rel="stylesheet" href="style.css?v=2.4">
 </head>
 <body>
   <div id="notice" class="notice" role="status" aria-live="polite"></div>
@@ -56,11 +56,21 @@
   <dialog id="sheet" aria-labelledby="sheet-title">
     <form id="sheet-form" method="dialog"></form>
   </dialog>
+  <dialog id="receipt-viewer" aria-labelledby="receipt-title">
+    <h2 id="receipt-title">Receipt</h2>
+    <div id="receipt-content" role="region" aria-label="Receipt preview" aria-live="polite"></div>
+    <p class="field-note">You can also open or download the original receipt.</p>
+    <div class="btn-row">
+      <a id="open-receipt" class="btn" target="_blank" rel="noopener" hidden>Open file</a>
+      <button id="download-receipt" class="btn" type="button" hidden>Download</button>
+    </div>
+    <button id="close-receipt" class="btn primary" type="button">Close receipt</button>
+  </dialog>
 
   <input type="file" id="import-file" accept="application/json,.json" hidden>
 
   <section id="print-ledger" aria-label="Printable rent ledger"></section>
   <noscript>This app needs JavaScript to display and save your rent ledger.</noscript>
-  <script src="app.js?v=2.1"></script>
+  <script src="app.js?v=2.4"></script>
 </body>
 </html>

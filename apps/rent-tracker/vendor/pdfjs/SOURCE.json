@@ -1,0 +1,7 @@
+{
+  "package": "pdfjs-dist",
+  "version": "6.4.299",
+  "source": "https://github.com/mozilla/pdf.js",
+  "license": "Apache-2.0",
+  "build": "legacy minified"
+}
