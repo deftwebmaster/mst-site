@@ -515,7 +515,7 @@ function renderSettings() {
       <p class="field-note">Last backup export: ${state.lastBackup ? fmtDate(state.lastBackup) : 'Not yet exported'}. An export opens sharing or downloads a file; check that you kept it.</p>
       <div class="btn-row"><button class="btn" data-action="export">Export backup</button><button class="btn" data-action="import">Import backup</button></div>
       <button class="btn small" data-action="snapshot">Restore recovery snapshot</button>
-    </div><h2>New resident</h2><p class="hint intro">Each friend sets up their own ledger on their own device. To start a different ledger on this device, export your backup first.</p><button class="btn small" data-action="new-ledger">Set up a new ledger</button><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.7 · Updates never require clearing your saved data.</p>`;
+    </div><h2>New resident</h2><p class="hint intro">Each friend sets up their own ledger on their own device. To start a different ledger on this device, export your backup first.</p><button class="btn small" data-action="new-ledger">Set up a new ledger</button><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.8 · Updates never require clearing your saved data.</p>`;
 }
 function renderPrint() {
   const c = compute();

@@ -70,14 +70,23 @@ p { margin: 0; }
 .hint strong { color: var(--text); }
 
 /* Buttons */
-button { font: inherit; color: inherit; }
+button { font: inherit; color: inherit; touch-action: manipulation; }
 .btn {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; height: 52px; margin-top: 14px;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--card-2); font-size: 16px; font-weight: 600; cursor: pointer;
 }
-.btn:active { transform: scale(0.98); }
+.btn {
+  box-shadow: 0 3px 0 #030309, 0 5px 10px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .1);
+  transition: transform 100ms ease-out, box-shadow 100ms ease-out, filter 100ms ease-out;
+}
+.btn:active:not(:disabled) {
+  transform: translateY(3px) scale(.99);
+  box-shadow: 0 0 0 #030309, inset 0 2px 5px rgba(0, 0, 0, .3);
+  filter: brightness(.9);
+  transition-duration: 35ms;
+}
 .btn.primary { border: none; color: #07070f; background: linear-gradient(100deg, var(--cyan), var(--violet)); }
 .btn.danger { color: var(--rose); }
 .btn.small { height: 40px; font-size: 14px; margin-top: 10px; }
@@ -92,8 +101,8 @@ button { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
 }
 .row:last-child { border-bottom: none; }
-button.row { cursor: pointer; }
-button.row:active { background: var(--card-2); }
+button.row { cursor: pointer; transition: background-color 100ms ease-out, box-shadow 100ms ease-out; }
+button.row:active:not(:disabled) { background: var(--card-2); box-shadow: inset 0 2px 6px rgba(0, 0, 0, .4); transition-duration: 35ms; }
 .row .main { font-weight: 600; font-size: 15px; }
 .row .meta { font-size: 13px; color: var(--muted); margin-top: 2px; }
 .row .amt { font-weight: 600; white-space: nowrap; }
@@ -149,6 +158,12 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.6); }
 }
 .tab svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tab.active { color: var(--cyan); }
+.tab { border-radius: 10px; transition: transform 100ms ease-out, background-color 100ms ease-out, box-shadow 100ms ease-out; }
+.tab:active:not(:disabled) { transform: translateY(2px) scale(.96); background: var(--card-2); box-shadow: inset 0 2px 5px rgba(0, 0, 0, .35); transition-duration: 35ms; }
+@media (prefers-reduced-motion: reduce) {
+  .btn, button.row, .tab { transition: none; }
+  .btn:active:not(:disabled), .tab:active:not(:disabled) { transform: none; }
+}
 
 [hidden] { display: none !important; }
 #recovery, #setup-view, .banner, .notice { max-width: 520px; margin-left: auto; margin-right: auto; }
