@@ -50,12 +50,32 @@ function receiptMetadata(r) {
   return {id:r.id,name:r.name,type:r.type,size:r.size};
 }
 const DEFAULT_STATE = {
-  version: 3, moveIn: '2026-10-02', dueDay: 5,
+  version: 3, moveIn: todayStr(), dueDay: weekday(todayStr()),
   phase1Rate: 98, phase2Rate: 133, phase2Start: null,
   rateChanges: [], arrangement: { date: null, note: '' }, lastBackup: null,
-  charges: [{ id: 'movein-fee', date: '2026-10-02', amount: 50, label: 'Move-in fee' }],
-  payments: [{ id: 'first-payment', date: '2026-10-02', amount: 148, note: 'Week 1 rent + move-in fee' }],
+  charges: [], payments: [],
 };
+function emptyLedger(moveIn=todayStr()) {
+  return {...structuredClone(DEFAULT_STATE),moveIn,dueDay:weekday(moveIn),charges:[],payments:[]};
+}
+function createLedger(values) {
+  const moveIn=values.moveIn;
+  if(!isDate(moveIn)||moveIn>todayStr())throw new Error('Choose a real move-in date on or before today.');
+  const phase1Rate=parseAmount(values.rate1),phase2Rate=parseAmount(values.rate2);
+  if(!phase1Rate||!phase2Rate)throw new Error('Enter positive weekly rates, with at most two decimals.');
+  const optional=(value,label)=>{
+    const text=String(value||'').trim();
+    if(!text||/^0(?:\.0{1,2})?$/.test(text))return 0;
+    const amount=parseAmount(text);if(!amount)throw new Error(`Enter a valid ${label}, or leave it blank.`);return amount;
+  };
+  const fee=optional(values.fee,'move-in fee'),paid=optional(values.paid,'initial payment');
+  const paidDate=values.paidDate||moveIn;
+  if(paid&&(!isDate(paidDate)||paidDate<moveIn||paidDate>todayStr()))throw new Error('The payment date must be between move-in and today.');
+  const next={...emptyLedger(moveIn),phase1Rate,phase2Rate,dueDay:Number(values.dueDay)};
+  if(fee)next.charges.push({id:uid(),date:moveIn,amount:fee,label:'Move-in fee'});
+  if(paid)next.payments.push({id:uid(),date:paidDate,amount:paid,note:'Initial payment',receipt:null});
+  return normalizeState(next);
+}
 
 // Reject an entire invalid ledger; never silently remove financial records.
 function normalizeState(s) {
@@ -118,10 +138,12 @@ let storedRaw = null;
 let recoveryRaw = null;
 let storageError = '';
 let externalChange = false;
+let needsSetup = false;
 function loadState() {
   try {
     storedRaw = localStorage.getItem(STORAGE_KEY);
-    return storedRaw === null ? structuredClone(DEFAULT_STATE) : normalizeState(JSON.parse(storedRaw));
+    needsSetup=storedRaw===null;
+    return needsSetup ? emptyLedger() : normalizeState(JSON.parse(storedRaw));
   } catch (e) {
     recoveryRaw = storedRaw;
     storageError = `Saved data could not be opened. ${e.message}`;
@@ -141,12 +163,13 @@ function saveState(next, { snapshot = true, expectedRaw = storedRaw } = {}) {
       throw new Error('Data changed in another tab. Reload the latest data before saving.');
     }
     if (snapshot) localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
-      savedAt: new Date().toISOString(), raw: storedRaw ?? JSON.stringify(state || DEFAULT_STATE),
+      savedAt: new Date().toISOString(), raw: storedRaw ?? JSON.stringify(state || emptyLedger()),
     }));
     const raw = JSON.stringify(validated);
     localStorage.setItem(STORAGE_KEY, raw);
     storedRaw = raw;
     state = validated;
+    needsSetup = false;
     recoveryRaw = null;
     storageError = '';
     return true;
@@ -361,6 +384,32 @@ async function decodeBackupReceipts(parsed,ledger) {
   return files;
 }
 
+// A small image-backed PDF writer keeps printing independent of window.print.
+// Pages use the browser's fonts, preserving names/notes with Unicode characters.
+function makeImagePDF(pages) {
+  if(!pages.length)throw new Error('No ledger pages were generated.');
+  const parts=[],offsets=[0],encoder=new TextEncoder();let position=0;
+  const append=value=>{const bytes=typeof value==='string'?encoder.encode(value):value;parts.push(bytes);position+=bytes.byteLength;};
+  const object=(id,body)=>{offsets[id]=position;append(`${id} 0 obj\n`);append(body);append('\nendobj\n');};
+  append('%PDF-1.4\n');append(new Uint8Array([37,226,227,207,211,10]));
+  object(1,'<< /Type /Catalog /Pages 2 0 R >>');
+  object(2,`<< /Type /Pages /Kids [${pages.map((_,i)=>`${3+i*3} 0 R`).join(' ')}] /Count ${pages.length} >>`);
+  pages.forEach((p,i)=>{
+    const page=3+i*3,content=page+1,image=page+2;
+    object(page,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /PageImage ${image} 0 R >> >> /Contents ${content} 0 R >>`);
+    const stream='q\n612 0 0 792 0 0 cm\n/PageImage Do\nQ\n';
+    object(content,`<< /Length ${encoder.encode(stream).byteLength} >>\nstream\n${stream}endstream`);
+    offsets[image]=position;
+    append(`${image} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${p.width} /Height ${p.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.bytes.byteLength} >>\nstream\n`);
+    append(p.bytes);append('\nendstream\nendobj\n');
+  });
+  const xref=position;
+  append(`xref\n0 ${offsets.length}\n0000000000 65535 f \n`);
+  for(let i=1;i<offsets.length;i++)append(`${String(offsets[i]).padStart(10,'0')} 00000 n \n`);
+  append(`trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(parts,{type:'application/pdf'});
+}
+
 // ---------- Rendering ----------
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -376,10 +425,13 @@ function announce(message) { const box = $('#notice'); if (box) box.textContent 
 function render() {
   $('#storage-banner').hidden = !storageError && !externalChange;
   $('#storage-message').textContent = externalChange ? 'Data changed in another tab. Reload the latest data before saving.' : storageError;
-  $('#app').hidden = !state;
-  $('.tabbar').hidden = !state;
+  $('#app').hidden = !state || needsSetup;
+  $('.tabbar').hidden = !state || needsSetup;
+  $('#setup-view').hidden = !state || !needsSetup;
   $('#recovery').hidden = !!state;
   if (!state) { $('#recovery-message').textContent = storageError; return; }
+  if(needsSetup){renderSetupScreen();return;}
+  $('#setup-view').replaceChildren();
   const c = compute();
   renderHome(c); renderWeeks(c); renderSettings(); renderPrint();
 }
@@ -394,7 +446,8 @@ function renderHome(c) {
   const a = state.arrangement;
   const backupDue = !state.lastBackup || daysBetween(state.lastBackup, c.today) >= 7;
   $('#view-home').innerHTML = `
-    <h1>Rent</h1>
+    <h1>24 Rent</h1>
+    <p class="hint intro">A rent tracker for residents of the Dallas 24 Hour Club, supporting Phase 1 and Phase 2 rent, payments, and receipts.</p>
     <div class="hero ${behind ? 'behind' : c.balance > 0 ? 'ahead' : 'even'}">
       <p class="label">${label}</p><p class="amount">${fmtMoney(Math.abs(c.balance))}</p>
       <p class="sub">${behind ? 'Unpaid rent and charges to date' : c.balance > 0 ? 'Available toward upcoming rent and charges' : 'Nothing owed right now'}</p>
@@ -421,7 +474,7 @@ function renderWeeks(c) {
   const items = [...c.obligations, ...c.upcoming, ...futureCharges].sort((a,b) => -obligationSort(a,b));
   $('#view-weeks').innerHTML = `<h1>Weeks</h1>
     <p class="hint intro">Rent is due each ${DAYS[state.dueDay]} for the week ahead. Payments cover the oldest rent and charges first. Tap a week to see its payments and receipts.${weekday(state.moveIn) !== state.dueDay ? ' The first partial week is prorated by day.' : ''}</p>
-    <div class="btn-row"><button class="btn small" data-action="csv">Export CSV</button><button class="btn small" data-action="print">Print ledger</button></div>
+    <div class="btn-row"><button class="btn small" data-action="csv">Export CSV</button><button class="btn small" data-action="print">Print / PDF ledger</button></div>
     <div class="list ledger-list">${items.map(o => {
       const isWeek=o.kind==='week';
       const hasReceipt=isWeek&&o.allocations.some(a=>state.payments.find(p=>p.id===a.paymentId)?.receipt);
@@ -449,7 +502,7 @@ function renderSettings() {
   $('#view-settings').innerHTML = `<h1>Settings</h1>
     <h2>Rent and schedule</h2><div class="settings-card">
       <p class="hint intro">Move-in: ${fmtDate(state.moveIn)}<br>Due each ${DAYS[state.dueDay]}<br>Phase 2 starts: ${state.phase2Start ? fmtDate(state.phase2Start) : 'Not set'}</p>
-      <button class="btn small" data-action="schedule">Edit schedule / Phase 2</button>
+      <button class="btn small" data-action="schedule">Edit move-in / due day / Phase 2</button>
       <p class="field-note">Schedule and Phase 2 corrections can change past balances. A recovery snapshot is saved first.</p>
     </div>
     <h2>Rate history</h2><div class="list">
@@ -462,14 +515,139 @@ function renderSettings() {
       <p class="field-note">Last backup export: ${state.lastBackup ? fmtDate(state.lastBackup) : 'Not yet exported'}. An export opens sharing or downloads a file; check that you kept it.</p>
       <div class="btn-row"><button class="btn" data-action="export">Export backup</button><button class="btn" data-action="import">Import backup</button></div>
       <button class="btn small" data-action="snapshot">Restore recovery snapshot</button>
-    </div><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.4 · Updates never require clearing your saved data.</p>`;
+    </div><h2>New resident</h2><p class="hint intro">Each friend sets up their own ledger on their own device. To start a different ledger on this device, export your backup first.</p><button class="btn small" data-action="new-ledger">Set up a new ledger</button><h2>App</h2><p class="hint intro" id="offline-status">${offlineMessage}</p><button class="btn small" data-action="check-update">Check for update</button><p class="field-note">Version 2.7 · Updates never require clearing your saved data.</p>`;
 }
 function renderPrint() {
   const c = compute();
   $('#print-ledger').innerHTML = `<h1>Rent ledger</h1><p>As of ${fmtDate(c.today, {year:'numeric',month:'long',day:'numeric'})} · Move-in ${state.moveIn}</p><p>Outstanding: ${fmtMoney(-c.balance)} (negative means credit)</p><table><thead><tr><th>Date</th><th>Description</th><th>Charge</th><th>Payment</th><th>Outstanding</th></tr></thead><tbody>${ledgerRows().map(r => `<tr><td>${r.date}</td><td>${esc(r.description)}</td><td>${r.charge ? fmtMoney(r.charge) : ''}</td><td>${r.payment ? fmtMoney(r.payment) : ''}</td><td>${fmtMoney(r.balance)}</td></tr>`).join('')}</tbody></table>`;
 }
+function wrapLedgerText(context,text,width) {
+  const lines=[];
+  for(const paragraph of String(text).split('\n')) {
+    let line='';
+    for(const word of paragraph.split(/\s+/)) {
+      const candidate=line?`${line} ${word}`:word;
+      if(context.measureText(candidate).width<=width){line=candidate;continue;}
+      if(line){lines.push(line);line='';}
+      for(const character of Array.from(word)){
+        if(line&&context.measureText(line+character).width>width){lines.push(line);line='';}
+        line+=character;
+      }
+    }
+    lines.push(line);
+  }
+  return lines;
+}
+async function ledgerPDF(isCancelled=()=>false) {
+  const rows=ledgerRows(),c=compute(),moveIn=state.moveIn;
+  const canvas=document.createElement('canvas');canvas.width=1836;canvas.height=2376;
+  const ctx=canvas.getContext('2d');if(!ctx)throw new Error('PDF creation is unavailable in this browser.');
+  ctx.scale(3,3);ctx.font='9px Arial, sans-serif';
+  const pages=[[]];let y=158;
+  for(const row of rows) {
+    const wrapped=wrapLedgerText(ctx,row.description,208);
+    for(let start=0;start<wrapped.length;start+=45) {
+      const lines=wrapped.slice(start,start+45),height=Math.max(28,lines.length*12+12);
+      if(y+height>744&&pages.at(-1).length){pages.push([]);y=158;}
+      pages.at(-1).push({...row,lines,height,y,continued:start>0});y+=height;
+    }
+  }
+  const images=[];
+  for(let i=0;i<pages.length;i++) {
+    if(isCancelled())return null;
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,612,792);
+    ctx.textAlign='left';ctx.fillStyle='#15151c';ctx.font='bold 24px Arial, sans-serif';ctx.fillText('Rent ledger',36,52);
+    ctx.font='11px Arial, sans-serif';ctx.fillText(`As of ${fmtDate(c.today,{year:'numeric',month:'long',day:'numeric'})}`,36,76);
+    ctx.fillText(`Move-in: ${moveIn}   |   Due each ${DAYS[state.dueDay]}`,36,94);
+    ctx.font='bold 12px Arial, sans-serif';ctx.fillText(`${c.balance>0?'Rent credit':'Outstanding'}: ${fmtMoney(Math.abs(c.balance))}`,36,117);
+    ctx.fillStyle='#ebedf2';ctx.fillRect(36,134,540,24);ctx.fillStyle='#15151c';ctx.font='bold 9px Arial, sans-serif';
+    ctx.fillText('Date',42,150);ctx.fillText('Description',110,150);
+    ctx.textAlign='right';ctx.fillText('Charge',402,150);ctx.fillText('Payment',482,150);ctx.fillText('Outstanding',570,150);
+    pages[i].forEach((r,j)=>{
+      if(j%2===1){ctx.fillStyle='#f6f7f9';ctx.fillRect(36,r.y,540,r.height);}
+      ctx.fillStyle='#15151c';ctx.font='9px Arial, sans-serif';ctx.textAlign='left';
+      ctx.fillText(r.continued?'(continued)':r.date,42,r.y+17);r.lines.forEach((line,n)=>ctx.fillText(line,110,r.y+17+n*12));
+      if(!r.continued){ctx.textAlign='right';ctx.fillText(r.charge?fmtMoney(r.charge):'',402,r.y+17);ctx.fillText(r.payment?fmtMoney(r.payment):'',482,r.y+17);ctx.fillText(fmtMoney(r.balance),570,r.y+17);}
+      ctx.strokeStyle='#d9dce3';ctx.lineWidth=.5;ctx.beginPath();ctx.moveTo(36,r.y+r.height);ctx.lineTo(576,r.y+r.height);ctx.stroke();
+    });
+    if(!rows.length){ctx.textAlign='left';ctx.fillStyle='#555';ctx.font='11px Arial, sans-serif';ctx.fillText('No rent charges or payments through this date.',42,181);}
+    ctx.textAlign='left';ctx.fillStyle='#555';ctx.font='9px Arial, sans-serif';ctx.fillText('Outstanding is positive for unpaid rent; negative for credit.',36,767);
+    ctx.textAlign='right';ctx.fillText(`Page ${i+1} of ${pages.length}`,576,767);
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.96));
+    if(!blob)throw new Error('The ledger page could not be created.');
+    images.push({width:canvas.width,height:canvas.height,bytes:new Uint8Array(await blob.arrayBuffer())});
+  }
+  if(isCancelled())return null;
+  return makeImagePDF(images);
+}
+async function printLedger() {
+  openSheet('Print / PDF ledger','<p id="print-status" class="hint intro" role="status">Preparing your printable ledger…</p><p class="field-note">On iPhone, choose Share / Print PDF, then Print in the share sheet. You can also save the PDF to Files.</p><button type="button" class="btn" id="download-ledger" hidden>Download PDF</button>',()=>null,null,'Preparing PDF…');
+  const status=$('#print-status'),submit=sheetForm.querySelector('[type=submit]'),download=$('#download-ledger');
+  submit.disabled=true;sheetForm.querySelector('[data-cancel]').textContent='Close';
+  sheetForm.onsubmit=e=>e.preventDefault();
+  try {
+    const blob=await ledgerPDF(()=>!sheet.open||!status.isConnected);
+    if(!blob||!sheet.open||!status.isConnected)return;
+    const file=new File([blob],`rent-ledger-${todayStr()}.pdf`,{type:'application/pdf'});
+    const share=!!navigator.canShare?.({files:[file]});
+    status.textContent='Your PDF is ready.';submit.disabled=false;submit.textContent=share?'Share / Print PDF':'Download PDF';
+    download.hidden=!share;download.onclick=()=>downloadFile(file);
+    sheetForm.onsubmit=async e=>{
+      e.preventDefault();
+      try{if(share)await navigator.share({files:[file],title:'Rent ledger'});else downloadFile(file);}
+      catch(e){if(e.name!=='AbortError')status.textContent='Sharing did not open. Choose Download PDF, then open the saved file to print.';}
+    };
+  }catch(e){if(status.isConnected){status.textContent=`Could not create the PDF. ${e.message}`;submit.hidden=true;}}
+}
 
 // ---------- Forms ----------
+function setupFields() {
+  const fresh=emptyLedger();
+  return field('Move-in date','moveIn',fresh.moveIn,'date',`required min="1900-01-01" max="${todayStr()}"`)+
+    selectField('Weekly rent due day','dueDay',DAYS,fresh.dueDay)+
+    '<p class="field-note" id="setup-schedule-note">Rent follows your move-in weekday. Choose another due day if needed.</p>'+
+    field('Weekly rent (Phase 1)','rate1',fresh.phase1Rate,'text','inputmode="decimal" required')+
+    '<details><summary>Move-in fee, first payment, and Phase 2 rate (optional)</summary>'+
+    field('Move-in fee (leave blank for none)','fee','','text','inputmode="decimal"')+
+    field('Payment already made (leave blank for none)','paid','','text','inputmode="decimal"')+
+    field('Date that payment was made','paidDate',fresh.moveIn,'date',`min="1900-01-01" max="${todayStr()}"`)+
+    field('Phase 2 weekly rate','rate2',fresh.phase2Rate,'text','inputmode="decimal" required')+'</details>';
+}
+function bindScheduleDates(form,customDay=false) {
+  let dayEdited=customDay,paidDateEdited=false;
+  form.onchange=e=>{
+    if(e.target.name==='dueDay')dayEdited=true;
+    if(e.target.name==='paidDate')paidDateEdited=true;
+    if(e.target.name==='moveIn'&&isDate(e.target.value)) {
+      if(!dayEdited)form.elements.dueDay.value=weekday(e.target.value);
+      if(form.elements.paidDate&&!paidDateEdited)form.elements.paidDate.value=e.target.value;
+    }
+    const note=form.querySelector('#setup-schedule-note');
+    if(note)note.textContent=`Weekly rent is due each ${DAYS[Number(form.elements.dueDay.value)]}.`;
+  };
+}
+function renderSetupScreen() {
+  if($('#onboarding-form'))return;
+  $('#setup-view').innerHTML=`<h1>Set up your rent</h1><p class="hint intro">24 Rent helps Dallas 24 Hour Club residents track Phase 1 and Phase 2 rent, payments, and receipts. Default weekly rates are $98 for Phase 1 and $133 for Phase 2.</p><p class="hint intro">Choose your own move-in date and weekly rent. No payments or fees are added unless you enter them.</p><form id="onboarding-form" class="settings-card">${setupFields().replaceAll('aria-describedby="form-error"','aria-describedby="setup-error"')}<p class="error" id="setup-error" role="alert" hidden></p><button class="btn primary" type="submit">Start my ledger</button></form><button class="btn" data-action="import">Import an existing backup</button>`;
+  const form=$('#onboarding-form');bindScheduleDates(form);
+  form.onsubmit=e=>{
+    e.preventDefault();
+    try{
+      const next=createLedger(Object.fromEntries(new FormData(form)));
+      if(!saveState(next))throw new Error(storageError);
+      render();announce('Your ledger is ready.');
+    }catch(e){$('#setup-error').hidden=false;$('#setup-error').textContent=e.message;renderStorageBannerIfNeeded();}
+  };
+}
+function renderStorageBannerIfNeeded(){if(storageError)renderStorageBanner();}
+function newLedgerSheet() {
+  openSheet('Set up a new ledger','<p class="hint intro">This replaces this device’s current ledger after confirmation. Export your backup first. A recovery snapshot will also be saved.</p>'+setupFields(),(fd,next)=>{
+    let fresh;try{fresh=createLedger(Object.fromEntries(fd));}catch(e){return e.message;}
+    if(!confirm('Replace the current ledger with this new resident’s setup? The current ledger will be saved as a recovery snapshot.'))return 'No changes saved.';
+    Object.assign(next,fresh);
+  },null,'Start new ledger');
+  bindScheduleDates(sheetForm);
+}
 function field(label, name, value='', type='text', extra='') {
   return `<label class="field"><span>${label}</span><input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra} aria-describedby="form-error"></label>`;
 }
@@ -485,6 +663,7 @@ function formError(message, fieldName) {
 function openSheet(title, html, onSubmit, onDelete, button='Save') {
   if(sheet.open)throw new Error('Close the current form before opening another.');
   sheetBusy=false;
+  sheetForm.onchange=null;
   sheetReturnFocus = document.activeElement;
   sheetForm.oninput = e => {
     $('#form-error').hidden = true;
@@ -671,6 +850,7 @@ function scheduleSheet() {
       if(!confirm('Recalculate rent history using this schedule and Phase 2 date? A recovery snapshot will be saved.'))return 'No changes saved.';
       Object.assign(next,{moveIn,dueDay,phase2Start:p2});
     });
+  bindScheduleDates(sheetForm,state.dueDay!==weekday(state.moveIn));
 }
 function baseRateSheet() {
   openSheet('Correct starting rates',field('Phase 1 starting weekly rate','rate1',state.phase1Rate,'text','inputmode="decimal" required')+field('Phase 2 starting weekly rate','rate2',state.phase2Rate,'text','inputmode="decimal" required')+'<p class="hint intro">These are historical corrections. To change rent from a specific date onward, cancel and choose Add rate change.</p>',(fd,next)=>{
@@ -793,6 +973,7 @@ document.addEventListener('click',e=>{
     case 'add-charge':return chargeSheet();
     case 'edit-charge':return chargeSheet(state.charges.find(p=>p.id===el.dataset.id));
     case 'schedule':return scheduleSheet();
+    case 'new-ledger':return newLedgerSheet();
     case 'base-rates':return baseRateSheet();
     case 'add-rate':return rateSheet();
     case 'edit-rate':return rateSheet(state.rateChanges.find(r=>r.phase===Number(el.dataset.phase)&&r.date===el.dataset.date));
@@ -804,7 +985,7 @@ document.addEventListener('click',e=>{
     case 'raw':return exportRaw();
     case 'reload':if(!sheet.open||confirm('Close this form and reload the latest saved data?'))location.reload();return;
     case 'csv':downloadFile(new File(['\uFEFF'+csvLedger()],`rent-ledger-${todayStr()}.csv`,{type:'text/csv;charset=utf-8'}));announce('CSV download opened.');return;
-    case 'print':renderPrint();window.print();return;
+    case 'print':return printLedger();
     case 'check-update':return checkUpdate();
     case 'apply-update':
       if(sheet.open){announce('Finish or cancel your open form before updating.');return;}

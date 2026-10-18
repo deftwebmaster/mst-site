@@ -7,12 +7,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Rent">
-  <title>Rent Tracker</title>
+  <meta name="apple-mobile-web-app-title" content="24 Rent">
+  <meta name="description" content="A rent tracker for residents of the Dallas 24 Hour Club, supporting Phase 1 and Phase 2 rent, payments, and receipts.">
+  <title>24 Rent</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.4">
+  <link rel="stylesheet" href="style.css?v=2.7">
 </head>
 <body>
   <div id="notice" class="notice" role="status" aria-live="polite"></div>
@@ -32,11 +33,14 @@
     <button class="btn" data-action="import">Import a valid backup</button>
     <button class="btn" data-action="snapshot">Restore recovery snapshot</button>
   </section>
+  <section id="setup-view" hidden></section>
   <main id="app">
     <section id="view-home" class="view"></section>
     <section id="view-weeks" class="view" hidden></section>
     <section id="view-settings" class="view" hidden></section>
   </main>
+
+  <footer class="app-footer"><small>Developed by <a href="https://matt.st" target="_blank" rel="noopener noreferrer">Matt Livingston</a></small></footer>
 
   <nav class="tabbar" aria-label="Main navigation">
     <button class="tab active" data-view="home" aria-current="page" aria-controls="view-home">
@@ -71,6 +75,6 @@
 
   <section id="print-ledger" aria-label="Printable rent ledger"></section>
   <noscript>This app needs JavaScript to display and save your rent ledger.</noscript>
-  <script src="app.js?v=2.4"></script>
+  <script src="app.js?v=2.7"></script>
 </body>
 </html>

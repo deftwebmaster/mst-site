@@ -1,10 +1,10 @@
 'use strict';
 // Bump RELEASE and the CSS/JS query versions in index.html together.
-const RELEASE = '2.4';
+const RELEASE = '2.7';
 const PREFIX = `rent-tracker:${encodeURIComponent(self.registration.scope)}:`;
 const CACHE = `${PREFIX}${RELEASE}`;
 const BASE = self.registration.scope;
-const FILES = ['./', 'index.html', 'style.css?v=2.4', 'app.js?v=2.4',
+const FILES = ['./', 'index.html', 'style.css?v=2.7', 'app.js?v=2.7',
   'manifest.webmanifest', 'icons/apple-touch-icon.png', 'icons/icon-192.png',
   'icons/icon-512.png', 'icons/icon-maskable-512.png',
   ...[

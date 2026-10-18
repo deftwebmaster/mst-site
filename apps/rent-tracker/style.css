@@ -34,6 +34,10 @@ body {
 }
 
 #app { max-width: 520px; margin: 0 auto; }
+.app-footer { max-width: 520px; margin: 28px auto 8px; text-align: center; color: var(--muted); }
+.app-footer small { font-size: 12px; }
+.app-footer a { color: inherit; text-underline-offset: 3px; }
+.app-footer a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 4px; }
 
 h1 { font-size: 28px; font-weight: 700; margin: 8px 0 16px; letter-spacing: -0.02em; }
 h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 24px 0 8px; }
@@ -147,7 +151,10 @@ dialog#sheet::backdrop { background: rgba(0, 0, 0, 0.6); }
 .tab.active { color: var(--cyan); }
 
 [hidden] { display: none !important; }
-#recovery, .banner, .notice { max-width: 520px; margin-left: auto; margin-right: auto; }
+#recovery, #setup-view, .banner, .notice { max-width: 520px; margin-left: auto; margin-right: auto; }
+#setup-view { padding-bottom: 24px; }
+#setup-view details { margin: 16px 0; }
+#setup-view details summary { cursor: pointer; color: var(--muted); margin-bottom: 14px; }
 .notice:empty { display: none; }
 .notice { padding: 10px 12px; border: 1px solid var(--cyan); border-radius: 12px; margin-bottom: 12px; font-size: 14px; overflow-wrap: anywhere; }
 .callout { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-top: 14px; font-size: 14px; }
