@@ -57,13 +57,15 @@ const topics = [
 ['Living as an Example','traditions','discussion','How does a sober life speak louder than any pitch?','What first drew you toward recovery?','What is the difference between sharing and selling?','How do you protect anonymity in public, online and off?'],
 ['The Spirit of Anonymity','traditions','reflection','What does anonymity give us beyond privacy?','How does anonymity keep egos in check?','When have principles mattered more than personalities?','How do you treat what you hear in this room?']
 ].map((t,i)=>({id:i,title:t[0],category:t[1],style:t[2],description:t[3],prompts:t.slice(4)}));
+// Topic ids 1–12 follow the Steps in order, and the Traditions topics walk through the Traditions.
+let traditionNumber=0;topics.forEach(t=>{if(t.id>=1&&t.id<=12)t.number='Step '+t.id;else if(t.category==='traditions')t.number='Tradition '+(++traditionNumber)});
 const categories={steps:{name:'The Twelve Steps',color:'#e8bc76'},traditions:{name:'The Twelve Traditions',color:'#a9b8ff'},principles:{name:'Spiritual principles',color:'#d9b3f0'},daily:{name:'Everyday recovery',color:'#8cc8f0'},relationships:{name:'Relationships & amends',color:'#f2a0a8'},newcomer:{name:'Newcomer-friendly',color:'#7fdcd0'},growth:{name:'Growth & reflection',color:'#b9dc8a'}};
 const DAY=864e5,SKIP_DAYS=28;
 const $=id=>document.getElementById(id);
 const load=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}};
 const store=(key,value)=>{try{localStorage.setItem(key,JSON.stringify(value))}catch{}};
 const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)');
-let current=topics[0],recent=[],history=[],showPrompts=true,installPrompt=null,busy=false;
+let current=topics[0],recent=[],trail=[],showPrompts=load('meeting-spark-prompts',true)!==false,installPrompt=null,busy=false;
 let favorites=load('meeting-spark-favorites',[]);if(!Array.isArray(favorites))favorites=[];favorites=favorites.filter(n=>Number.isInteger(n)&&topics[n]);
 // Topic id -> timestamp of the last time a chair marked it used.
 let used=load('meeting-spark-used',{});if(!used||typeof used!=='object'||Array.isArray(used))used={};for(const id in used)if(!topics[id]||typeof used[id]!=='number')delete used[id];
@@ -77,7 +79,7 @@ function display(t){
   current=t;const cat=categories[t.category];
   document.body.style.setProperty('--cat',cat.color);
   $('categoryLabel').textContent=cat.name;
-  $('cardNumber').textContent='No. '+String(t.id+1).padStart(2,'0');
+  $('cardNumber').textContent=t.number||'';$('cardNumber').hidden=!t.number;
   $('topicTitle').textContent=t.title;$('topicDescription').textContent=t.description;
   $('promptList').replaceChildren(...t.prompts.map(s=>{let li=document.createElement('li');li.textContent=s;return li}));
   const saved=favorites.includes(t.id),u=used[t.id],today=u&&daysAgo(u)<=0;
@@ -113,8 +115,8 @@ async function deal(t,dir,fromX=0){
     await card.animate([{transform:dir>0?'translateY(26px) scale(.94)':`translateX(${w*.6}px) rotate(8deg)`,opacity:0},{transform:'none',opacity:1}],{duration:420,easing:'cubic-bezier(.2,.9,.25,1.08)'}).finished;
   }finally{busy=false}
 }
-function next(fromX){if(busy)return;history=[...history,current.id].slice(-50);deal(pick(),1,fromX)}
-function previous(fromX){if(busy)return;if(!history.length){snapBack(fromX);return}deal(topics[history.pop()],-1,fromX)}
+function next(fromX){if(busy)return;trail=[...trail,current.id].slice(-50);deal(pick(),1,fromX)}
+function previous(fromX){if(busy)return;if(!trail.length){snapBack(fromX);return}deal(topics[trail.pop()],-1,fromX)}
 function snapBack(fromX){if(!fromX)return;const from=card.style.transform;card.style.transform='';card.animate?.([{transform:from},{transform:'none'}],{duration:320,easing:'cubic-bezier(.2,.9,.25,1.2)'})}
 
 let drag=null;
@@ -146,7 +148,7 @@ function renderUsed(){
   if(!entries.length){let e=document.createElement('span');e.className='sub';e.textContent='Tap “Mark used” on the topic you chair with. It will be skipped for four weeks so your group gets something fresh.';list.append(e);return}
   entries.forEach(([id,ts])=>{const b=chip(topics[id],topics[id].title);let s=document.createElement('small');s.textContent=whenUsed(ts);b.append(s);list.append(b)});
 }
-function chip(t,label){let b=document.createElement('button');b.type='button';b.textContent=label;b.style.setProperty('--chip',categories[t.category].color);b.onclick=()=>{if(t.id!==current.id){history=[...history,current.id].slice(-50);deal(t,1)}window.scrollTo({top:0,behavior:'smooth'})};return b}
+function chip(t,label){let b=document.createElement('button');b.type='button';b.textContent=label;b.style.setProperty('--chip',categories[t.category].color);b.onclick=()=>{if(t.id!==current.id){trail=[...trail,current.id].slice(-50);deal(t,1)}window.scrollTo({top:0,behavior:'smooth'})};return b}
 
 $('generate').onclick=()=>next();
 $('category').onchange=$('style').onchange=()=>next();
@@ -155,8 +157,10 @@ $('favorite').onclick=()=>{if(favorites.includes(current.id))favorites=favorites
 $('markUsed').onclick=()=>{if(used[current.id]&&daysAgo(used[current.id])<=0)delete used[current.id];else used[current.id]=Date.now();store('meeting-spark-used',used);display(current);renderUsed()};
 $('clearFavorites').onclick=()=>{if(confirm('Remove all saved topics from this device?')){favorites=[];store('meeting-spark-favorites',favorites);display(current);renderFavorites()}};
 $('clearUsed').onclick=()=>{if(confirm('Forget which topics you have used? They will all be back in rotation.')){used={};store('meeting-spark-used',used);display(current);renderUsed()}};
-$('togglePrompts').onclick=()=>{showPrompts=!showPrompts;$('promptSection').hidden=!showPrompts;$('togglePrompts').textContent=showPrompts?'Hide discussion prompts':'Show discussion prompts'};
-function topicText(){return `${current.title}\n\n${current.description}${showPrompts?'\n\nDiscussion prompts:\n'+current.prompts.map((p,i)=>`${i+1}. ${p}`).join('\n'):''}\n\nGenerated with Meeting Spark`}
+function renderPrompts(){$('promptSection').hidden=!showPrompts;$('togglePrompts').textContent=showPrompts?'Hide discussion prompts':'Show discussion prompts'}
+$('togglePrompts').onclick=()=>{showPrompts=!showPrompts;store('meeting-spark-prompts',showPrompts);renderPrompts()};
+const appUrl=location.protocol.startsWith('http')?location.origin+location.pathname:'';
+function topicText(){return `${current.number?current.number+': ':''}${current.title}\n\n${current.description}${showPrompts?'\n\nDiscussion prompts:\n'+current.prompts.map((p,i)=>`${i+1}. ${p}`).join('\n'):''}\n\nFrom Meeting Spark${appUrl?' · '+appUrl:''}`}
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText(topicText());$('copy').textContent='✓ Copied';setTimeout(()=>$('copy').textContent='⧉ Copy',1500)}catch{window.prompt('Copy this topic:',topicText())}};
 $('share').onclick=async()=>{if(navigator.share){try{await navigator.share({title:'AA meeting topic: '+current.title,text:topicText()})}catch{}}else $('copy').click()};
 
@@ -171,12 +175,12 @@ function chime(){
   }catch{}
   navigator.vibrate?.([120,80,120]);
 }
-function startTimer(minutes){unlockAudio();lastMinutes=minutes;store('meeting-spark-timer',minutes);timer={...timer,total:minutes*6e4,end:Date.now()+minutes*6e4,running:true,done:false};runTimer()}
+function startTimer(minutes){unlockAudio();lastMinutes=minutes;store('meeting-spark-timer',minutes);timer={...timer,total:minutes*6e4,end:Date.now()+minutes*6e4,running:true,done:false};runTimer();syncWakeLock()}
 function runTimer(){clearInterval(timer.tick);timer.tick=setInterval(renderTimer,250);renderTimer()}
-function stopTimer(){clearInterval(timer.tick);timer={total:0,end:0,left:0,running:false,done:false,tick:0};renderTimer()}
+function stopTimer(){clearInterval(timer.tick);timer={total:0,end:0,left:0,running:false,done:false,tick:0};renderTimer();syncWakeLock()}
 function renderTimer(){
   let left=timer.running?timer.end-Date.now():timer.left;
-  if(timer.running&&left<=0){left=0;clearInterval(timer.tick);timer={...timer,running:false,left:0,done:true};chime()}
+  if(timer.running&&left<=0){left=0;clearInterval(timer.tick);timer={...timer,running:false,left:0,done:true};chime();syncWakeLock()}
   const shown=timer.total?left:lastMinutes*6e4,s=Math.ceil(shown/1000);
   $('timerDisplay').textContent=timer.done?'Time':`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
   $('timerBar').style.transform=`scaleX(${timer.total?1-left/timer.total:0})`;
@@ -190,8 +194,22 @@ $('timerToggle').onclick=()=>{
   if(!timer.total||timer.done)startTimer(lastMinutes);
   else if(timer.running){clearInterval(timer.tick);timer={...timer,running:false,left:timer.end-Date.now()};renderTimer()}
   else{unlockAudio();timer={...timer,running:true,end:Date.now()+timer.left};runTimer()}
+  syncWakeLock();
 };
 $('timerReset').onclick=stopTimer;
+
+// Keep the screen on while presenting or timing a share. Browsers drop the lock when the page is hidden, so take it again on return.
+let wakeLock=null,wakePending=false;
+async function syncWakeLock(){
+  const want=document.body.classList.contains('present')||timer.running;
+  if(want&&!wakeLock&&!wakePending&&navigator.wakeLock&&document.visibilityState==='visible'){
+    wakePending=true;
+    try{wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>{wakeLock=null})}catch{}
+    wakePending=false;
+    if(!(document.body.classList.contains('present')||timer.running))syncWakeLock();
+  }else if(!want&&wakeLock){const lock=wakeLock;wakeLock=null;lock.release().catch(()=>{})}
+}
+document.addEventListener('visibilitychange',syncWakeLock);
 
 // Present mode. Leaving browser fullscreen (Esc, swipe down) also leaves present mode.
 let wentFullscreen=false;
@@ -199,6 +217,7 @@ function setPresent(on){
   document.body.classList.toggle('present',on);$('presentBtn').textContent=on?'✕ Exit':'⛶ Present';
   if(on)document.documentElement.requestFullscreen?.().then(()=>wentFullscreen=true).catch(()=>{});
   else{wentFullscreen=false;if(document.fullscreenElement)document.exitFullscreen().catch(()=>{})}
+  syncWakeLock();
 }
 $('presentBtn').onclick=()=>setPresent(!document.body.classList.contains('present'));
 document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&wentFullscreen)setPresent(false)});
@@ -211,4 +230,6 @@ document.addEventListener('keydown',e=>{
 
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').hidden=false});$('install').onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;$('install').hidden=true}};
 if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
-display(current);renderFavorites();renderUsed();renderTimer();
+display(current);renderPrompts();renderFavorites();renderUsed();renderTimer();
+// Settle the first card's color before turning on color fades, so the page doesn't fade in from another color.
+getComputedStyle(document.body).getPropertyValue('--cat');document.body.classList.add('ready');
