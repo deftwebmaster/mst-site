@@ -12,9 +12,11 @@ On iPhone, open the hosted URL in Safari → Share → Add to Home Screen. On An
 
 ## Behavior
 - Tap the red button to count. Each click adds exactly one, including fast repeated taps.
-- Undo removes a count from the current session and all-time total.
-- Reset asks for confirmation, archives the current session, then starts from zero.
-- Stats show lifetime count, best session, completed sessions, session rate, and the latest 50 completed sessions. Rate uses elapsed wall-clock time since the first tap, including time with the app closed.
+- The layout fills exactly one phone screen (no scrolling); the tap button takes whatever space is left.
+- Undo (the arrow beside Save) removes a count from the current meeting and all-time total.
+- Save meeting records the count with its date on the leaderboard and resets to zero in one tap. A toast offers Undo for 6 seconds. Settings has Reset without saving for throwaway counts.
+- Leaderboard ranks every saved meeting (ties share a rank) with Top and Most recent views, shows where the current meeting is on pace to land, and lets you delete a mistaken entry.
+- Stats show lifetime count, best meeting, average per meeting, meetings saved, and the current rate. Rate uses elapsed wall-clock time since the first tap, including time with the app closed.
 - Settings offer optional sound and vibration. iOS does not support the browser vibration API.
 - Counts and preferences live in localStorage on this device and browser. They are not cloud synced. Clearing site data deletes them. JSON export is a backup for inspection; import is not implemented.
 - Open one active counting tab at a time. Other tabs refresh when storage events arrive; simultaneous taps in separate tabs are not transactionally merged.

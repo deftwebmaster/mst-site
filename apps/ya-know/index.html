@@ -11,17 +11,16 @@
 <main class="app">
 <h1 class="sr-only">Kevin’s “Ya Know” Counter</h1>
 <img class="brand" src="./assets/brand.webp" alt="Kevin’s Ya Know Counter, with a magnificent mustache" width="700" height="430">
-<section class="counter" aria-label="Current count"><output id="count" aria-live="polite" aria-atomic="true">0</output><p>Times Kevin has said<br><strong>“Ya Know”</strong></p></section>
+<section class="counter" aria-label="Current count"><output id="count" aria-live="polite" aria-atomic="true">0</output><p>Times Kevin has said<br><strong>“Ya Know”</strong><span id="session">New meeting</span></p></section>
 <button id="tap" class="art tap" aria-label="Count Kevin saying ya know"><img src="./assets/tap.webp" alt="Tap when Kevin says Ya Know" width="659" height="445"></button>
+<div class="save-row"><button id="undo" class="undo" disabled aria-label="Undo last tap"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button><button id="save" class="save" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l4 4v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 1-2z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/></svg>Save meeting</button></div>
 <nav class="actions" aria-label="Counter tools">
-<button id="reset" class="art" aria-label="Reset"><img src="./assets/reset.webp" alt="Reset" width="216" height="150"></button>
-<button id="stats" class="art" aria-label="Stats"><img src="./assets/stats.webp" alt="Stats" width="215" height="150"></button>
-<button id="settings" class="art" aria-label="Settings"><img src="./assets/settings.webp" alt="Settings" width="216" height="150"></button>
+<button id="board" class="tool"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3h8v6a4 4 0 0 1-8 0z"/><path d="M8 5H4.5a3.5 3.5 0 0 0 3.8 5.3M16 5h3.5a3.5 3.5 0 0 1-3.8 5.3M12 13v4M8 21h8M9.5 17h5"/></svg>Leaderboard</button>
+<button id="stats" class="tool"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-6M12 20V9M19 20V4"/></svg>Stats</button>
+<button id="settings" class="tool"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</button>
 </nav>
-<div class="utility"><button id="undo" disabled>Undo last tap</button><span id="session">New session</span></div>
-<p id="notice" role="status"></p>
-<footer>Developed by <a href="https://matt.st/" target="_blank" rel="noopener">Matt Livingston</a></footer>
 </main>
+<div id="toast" class="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" hidden></button></div>
 <dialog id="modal"><div class="dialog-head"><h2 id="modal-title"></h2><button id="close" aria-label="Close dialog">Close</button></div><div id="modal-body"></div></dialog>
 <script type="module" src="./app.js"></script>
 </body></html>
