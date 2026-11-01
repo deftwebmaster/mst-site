@@ -23,7 +23,12 @@ On iPhone, open the hosted URL in Safari → Share → Add to Home Screen. On An
 - Keyboard users can focus the tap button and press Space or Enter. Dialogs support Escape and contain keyboard focus.
 
 ## Updating
-Change the CACHE version in sw.js whenever releasing updated assets or code. Reload after publishing updates. Only this app’s prefixed caches are removed.
+Cloudflare caches CSS and JS for 4 hours, but not the HTML. Every release must change the URLs of the code files, or visitors get new HTML with old code and the app breaks. Bump the same number in all three places:
+- `index.html`: `style.css?v=N` and `app.js?v=N`
+- `app.js`: `register('./sw.js?v=N')`
+- `sw.js`: `const V='N'`
+
+Images are not versioned. If you replace one, give it a new filename. Only this app’s prefixed caches are removed.
 
 ## Source
 All runtime code is plain JavaScript, CSS, and HTML. `preview.mjs` is a development-only Node static server. `package.json` is optional for hosting. Icons and brand/button artwork are derived from the user-provided concept image.

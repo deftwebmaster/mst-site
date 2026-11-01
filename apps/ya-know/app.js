@@ -53,4 +53,4 @@ if($('install'))$('install').onclick=async()=>{await installPrompt.prompt();awai
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();installPrompt=event});
 window.addEventListener('storage',event=>{if(event.key===KEY){try{const other=JSON.parse(event.newValue);if(other?.version===1&&Number.isSafeInteger(other.count)&&Array.isArray(other.taps)&&Array.isArray(other.history)){state=other;render()}}catch{}}});
 render();if(!storageOK)toast('Saved data could not be read. New taps will try saving again.',null,null,8000);
-if('serviceWorker'in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>toast('Offline mode could not start. You can still count while online.'))}
+if('serviceWorker'in navigator){navigator.serviceWorker.register('./sw.js?v=3').catch(()=>toast('Offline mode could not start. You can still count while online.'))}
