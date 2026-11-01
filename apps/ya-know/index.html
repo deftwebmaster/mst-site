@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080d27"><meta name="description" content="Keep count every time Kevin says Ya Know. A tiny offline counter with a very big mustache.">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Ya Know">
+<title>Kevin’s “Ya Know” Counter</title>
+<link rel="manifest" href="./manifest.webmanifest"><link rel="icon" href="./assets/icon-192.png"><link rel="apple-touch-icon" href="./assets/icon-192.png"><link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<main class="app">
+<h1 class="sr-only">Kevin’s “Ya Know” Counter</h1>
+<img class="brand" src="./assets/brand.webp" alt="Kevin’s Ya Know Counter, with a magnificent mustache" width="700" height="430">
+<section class="counter" aria-label="Current count"><output id="count" aria-live="polite" aria-atomic="true">0</output><p>Times Kevin has said<br><strong>“Ya Know”</strong></p></section>
+<button id="tap" class="art tap" aria-label="Count Kevin saying ya know"><img src="./assets/tap.webp" alt="Tap when Kevin says Ya Know" width="659" height="445"></button>
+<nav class="actions" aria-label="Counter tools">
+<button id="reset" class="art" aria-label="Reset"><img src="./assets/reset.webp" alt="Reset" width="216" height="150"></button>
+<button id="stats" class="art" aria-label="Stats"><img src="./assets/stats.webp" alt="Stats" width="215" height="150"></button>
+<button id="settings" class="art" aria-label="Settings"><img src="./assets/settings.webp" alt="Settings" width="216" height="150"></button>
+</nav>
+<div class="utility"><button id="undo" disabled>Undo last tap</button><span id="session">New session</span></div>
+<p id="notice" role="status"></p>
+<footer>Developed by <a href="https://matt.st/" target="_blank" rel="noopener">Matt Livingston</a></footer>
+</main>
+<dialog id="modal"><div class="dialog-head"><h2 id="modal-title"></h2><button id="close" aria-label="Close dialog">Close</button></div><div id="modal-body"></div></dialog>
+<script type="module" src="./app.js"></script>
+</body></html>
