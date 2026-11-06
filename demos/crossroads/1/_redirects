@@ -1,0 +1,5 @@
+# 301s from the old GoDaddy URLs (Netlify / Cloudflare Pages format)
+/services%2Fproducts   /services   301
+/services/products     /services   301
+/services-products     /services   301
+/home                  /           301
