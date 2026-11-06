@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f4ef">
+  <meta name="description" content="Explore four website redesign concepts for Crossroads.">
+  <title>Crossroads — Website Concepts</title>
+  <style>
+    :root { color-scheme: light; --paper: #f5f4ef; --ink: #243c33; --muted: #68746c; --line: #d9dfd6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    .page { max-width: 1120px; min-height: 100svh; margin: auto; padding: 42px 40px 26px; display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+    .brand { font-size: 19px; font-weight: 700; letter-spacing: -.6px; }
+    .label { font-size: 11px; font-weight: 600; letter-spacing: 1.7px; text-transform: uppercase; }
+    header .label { color: var(--muted); }
+    main { flex: 1; padding: 76px 0 70px; }
+    .eyebrow { display: flex; align-items: center; gap: 9px; }
+    .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #7a9462; }
+    h1 { max-width: 720px; margin: 20px 0 18px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(42px, 6vw, 66px); line-height: 1.07; font-weight: 400; letter-spacing: -2.5px; }
+    .intro { max-width: 540px; margin: 0; color: var(--muted); font-size: 16px; line-height: 1.7; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-top: 48px; }
+    .card { position: relative; display: flex; flex-direction: column; min-height: 252px; padding: 25px; color: var(--ink); text-decoration: none; border: 1px solid var(--line); border-radius: 8px; background: #fbfbf7; transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease; }
+    .number { font-family: Georgia, "Times New Roman", serif; font-size: 54px; line-height: 1; letter-spacing: -2px; color: #a5b2a3; }
+    .card h2 { margin: auto 0 18px; padding-top: 40px; font-size: 18px; font-weight: 600; letter-spacing: -.4px; }
+    .card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 13px; }
+    .arrow { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 50%; color: var(--ink); transition: background .2s ease, color .2s ease; }
+    .arrow svg { width: 14px; height: 14px; }
+    .card:hover { transform: translateY(-5px); border-color: #93a48e; box-shadow: 0 12px 24px #243c3309; }
+    .card:hover .arrow { background: var(--ink); color: white; border-color: var(--ink); }
+    .card:focus-visible { outline: 3px solid #547946; outline-offset: 5px; }
+    footer { display: flex; justify-content: space-between; gap: 20px; border-top: 1px solid var(--line); padding-top: 21px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    @media (max-width: 850px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card { min-height: 220px; } }
+    @media (max-width: 480px) { .page { padding: 26px 22px 22px; } header { padding-bottom: 22px; } header .label { font-size: 9px; letter-spacing: 1px; } main { padding: 48px 0; } h1 { letter-spacing: -1.8px; } .grid { grid-template-columns: 1fr; margin-top: 32px; gap: 12px; } .card { min-height: 190px; padding: 22px; } .number { font-size: 44px; } .card h2 { padding-top: 26px; margin-bottom: 12px; } footer { flex-direction: column; gap: 5px; } }
+    @media (prefers-reduced-motion: reduce) { .card, .arrow { transition: none; } .card:hover { transform: none; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="brand">Crossroads<span aria-hidden="true">.</span></div>
+      <div class="label">Website redesign</div>
+    </header>
+    <main>
+      <div class="eyebrow label">A new direction</div>
+      <h1>Four concepts.<br>One new beginning.</h1>
+      <p class="intro">Explore four directions for the new Crossroads website. Select a concept below to take a look.</p>
+      <nav class="grid" aria-label="Website redesign concepts">
+        <a class="card" href="https://matt.st/demos/crossroads/1/" aria-label="View concept 01">
+          <span class="number" aria-hidden="true">01</span>
+          <h2>Concept 01</h2>
+          <div class="card-bottom"><span>View concept</span><span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"></path></svg></span></div>
+        </a>
+        <a class="card" href="https://matt.st/demos/crossroads/2/" aria-label="View concept 02">
+          <span class="number" aria-hidden="true">02</span>
+          <h2>Concept 02</h2>
+          <div class="card-bottom"><span>View concept</span><span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"></path></svg></span></div>
+        </a>
+        <a class="card" href="https://matt.st/demos/crossroads/3/" aria-label="View concept 03">
+          <span class="number" aria-hidden="true">03</span>
+          <h2>Concept 03</h2>
+          <div class="card-bottom"><span>View concept</span><span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"></path></svg></span></div>
+        </a>
+        <a class="card" href="https://matt.st/demos/crossroads/4/" aria-label="View concept 04">
+          <span class="number" aria-hidden="true">04</span>
+          <h2>Concept 04</h2>
+          <div class="card-bottom"><span>View concept</span><span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14M12 5l7 7-7 7"></path></svg></span></div>
+        </a>
+      </nav>
+    </main>
+    <footer><span>Crossroads · Website concepts</span><span>Prepared for your review</span></footer>
+  </div>
+
+
+</body></html>
