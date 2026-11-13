@@ -1,4 +1,4 @@
-import {dallasNow,dateFor,shiftDate,meetingsFor,timeMinutes,timeLabel,endTime,isInProgress,inProgressMeetings,ruleFor,RULES,WEEKLY_GOAL} from './schedule.js';
+import {dallasNow,dateFor,shiftDate,meetingsFor,timeMinutes,timeLabel,endTime,isInProgress,inProgressMeetings,ruleFor,RULES,WEEKLY_GOAL,phaseOneMandatoryCalendar,weeklyCheckinCalendar,CHECKIN_FORM_URL} from './schedule.js';
 import {KEY,emptyStore,validateStore,mergeStores} from './storage.js';
 
 const $=id=>document.getElementById(id);
@@ -9,6 +9,8 @@ const GOAL=WEEKLY_GOAL;
 const GOAL_WORD=['zero','one','two','three','four','five','six','seven','eight','nine','ten'][GOAL]??String(GOAL);
 const DALLAS={timeZone:'America/Chicago'};
 const BACKUP_REMINDER_DAYS=7;
+// "2 of 3" up to the goal; "4 (goal 3)" once it's passed.
+const ofGoal=n=>n>GOAL?`${n} (goal ${GOAL})`:`${n} of ${GOAL}`;
 
 const meetingKind=r=>r.kind||(r.location===CLUB?'club':'outside');
 const kindLabel=r=>meetingKind(r)==='outside'?'Outside meeting':'24 Hour Club';
@@ -124,7 +126,7 @@ function updateEntryKind(){
  $('entry-location').required=!outside;
  if(!outside&&!$('entry-location').value.trim())$('entry-location').value=CLUB;
  if(outside&&$('entry-location').value===CLUB)$('entry-location').value='';
- $('entry-help').textContent=outside?`Enter the group, date, and start time. Outside meetings count toward your ${GOAL_WORD} for the week.`:'Log a Club meeting that is missing from the schedule, or edit an existing attendance record.';
+ $('entry-help').textContent=outside?`Enter the group, date, and start time. Outside meetings count toward your ${GOAL_WORD} for the week. Remember to sign out in the Club’s Meeting Tracker before you leave.`:'Log a Club meeting that is missing from the schedule, or edit an existing attendance record.';
  updateCounts();
 }
 function updateCounts(){
@@ -167,7 +169,7 @@ function weekSummaries(){
  const out=[];
  for(let w=weekStart(dallasNow().date);w>=first&&out.length<520;w=shiftDate(w,-7)){
   const rs=recs.filter(r=>weekStart(r.date)===w),counted=rs.filter(countsToward).length;
-  out.push({week:w,logged:rs.length,counted,status:weekStatus(w,counted)});
+  out.push({week:w,logged:rs.length,counted,status:weekStatus(w,counted),checkin:CHECKIN_LABEL(checkinFor(w))});
  }
  return out;
 }
@@ -203,18 +205,19 @@ function renderWeek(now){
  const counted=active().filter(r=>countsToward(r)&&weekStart(r.date)===week),total=counted.length;
  const state=weekStatus(week,total,now);
  $('week-range').textContent=`${fmt(week,{month:'short',day:'numeric'})} – ${fmt(shiftDate(week,6),{month:'short',day:'numeric'})}`;
- $('weekly-total').textContent=`${total} of ${GOAL} meetings attended`;
+ $('weekly-total').textContent=total>GOAL?`${total} meetings attended`:`${total} of ${GOAL} meetings attended`;
  $('progress').max=GOAL;$('progress').value=Math.min(total,GOAL);
  $('weekly-message').textContent={
   met:week===weekStart(now.date)?'Weekly goal reached. Keep showing up.':`Goal met that week — ${total} counted meeting${total===1?'':'s'}.`,
-  missed:`Goal missed that week — ${total} of ${GOAL}.`,
+  missed:`Goal missed that week — ${ofGoal(total)}.`,
   current:`${GOAL-total} more to reach your weekly goal.`,
   upcoming:'This week hasn’t started yet.'
  }[state];
  $('weekly-message').className=state==='missed'?'missed':'';
  const days=Array.from({length:7},(_,i)=>{const date=shiftDate(week,i);return {date,count:counted.filter(r=>r.date===date).length};});
  keyed($('week-days'),JSON.stringify([days,selected]),()=>days.map(({date,count})=>{
-  const b=button(`${fmt(date,{weekday:'short'})} ${date.slice(-2)}${count?' ✓ '+count:''}`,()=>{selected=date;setView('schedule');},'week-day'+(date===selected?' selected':''),'day-'+date);
+  const b=button('',()=>{selected=date;setView('schedule');},'week-day'+(date===selected?' selected':'')+(count?' has-count':''),'day-'+date);
+  b.append(node('span',fmt(date,{weekday:'short'}),'wd'),node('span',String(Number(date.slice(-2))),'dn'),node('span',count?`✓${count}`:'·','ct'));
   b.setAttribute('aria-label',`${fmt(date)}: ${count} qualifying meeting${count===1?'':'s'}`);return b;
  }));
 }
@@ -277,8 +280,8 @@ function renderHistory(now){
   $('history-summary').textContent=weeks.length?`${weeks.length} week${weeks.length===1?'':'s'} · ${weeks.filter(w=>w.status==='met').length} met · ${weeks.filter(w=>w.status==='missed').length} missed`:'';
   keyed($('history-list'),JSON.stringify(['weeks',weeks]),()=>weeks.length?weeks.map(w=>{
    const b=button('',()=>{historyDate=w.week;$('history-scope').value='week';render();},'week-card '+w.status,'week-'+w.week);
-   b.append(node('span',weekLabel(w.week),'week-card-range'),node('span',`${w.counted} of ${GOAL} counted${w.logged>w.counted?` · ${w.logged} logged`:''}`,'week-card-count'),node('span',STATUS_LABEL[w.status],'status-chip'));
-   b.setAttribute('aria-label',`${weekLabel(w.week)}: ${w.counted} of ${GOAL} counted, ${STATUS_LABEL[w.status]}. Show this week.`);
+   b.append(node('span',weekLabel(w.week),'week-card-range'),node('span',`${w.counted>GOAL?`${w.counted} counted (goal ${GOAL})`:`${w.counted} of ${GOAL} counted`}${w.logged>w.counted?` · ${w.logged} logged`:''} · Check-in: ${w.checkin.toLowerCase()}`,'week-card-count'),node('span',STATUS_LABEL[w.status],'status-chip'));
+   b.setAttribute('aria-label',`${weekLabel(w.week)}: ${ofGoal(w.counted)} counted, ${STATUS_LABEL[w.status]}. Show this week.`);
    return b;
   }):[node('p','No meetings logged yet. Weeks appear here once you log your first meeting.','empty')]);
   return;
@@ -291,10 +294,12 @@ function renderHistory(now){
 }
 
 function backupDue(){
- if(!store.records.length)return false;
+ // Remind when something changed since the last backup and that backup (or, with none, the first entry) is over a week old.
+ const changes=[...store.records.map(r=>Date.parse(r.updatedAt)),...Object.values(store.checkins||{}).map(c=>Date.parse(c.updatedAt))];
+ if(!changes.length)return false;
  const last=store.lastBackup?Date.parse(store.lastBackup):0;
- if(!store.records.some(r=>Date.parse(r.updatedAt)>last))return false;
- const since=last||Math.min(...store.records.map(r=>Date.parse(r.createdAt)));
+ if(!changes.some(t=>t>last))return false;
+ const since=last||Math.min(...store.records.map(r=>Date.parse(r.createdAt)),...changes);
  return Date.now()-since>BACKUP_REMINDER_DAYS*864e5;
 }
 
@@ -310,19 +315,23 @@ function render(){
  $('phase-one-key').hidden=tracking;
  $('schedule-view').hidden=view!=='schedule';$('history-view').hidden=!tracking||view!=='history';
  $('intro-eyebrow').textContent=tracking?'YOUR RECOVERY, YOUR RECORD':'YOUR DAY, AT A GLANCE';
+ const relative={[now.date]:'Today',[shiftDate(now.date,1)]:'Tomorrow',[shiftDate(now.date,-1)]:'Yesterday'}[selected];
+ $('intro-title').textContent=tracking&&view==='history'?'Your record.':relative?`${relative}’s meetings.`:`Meetings for ${fmt(selected,{weekday:'long',month:'short',day:'numeric'})}.`;
  $('intro-subtitle').textContent=tracking?'Your schedule, with a personal record of showing up.':'A little clarity for the day ahead.';
  $('settings-phase-description').textContent=tracking?`Phase Two shows Phase Two requirements and adds personal attendance tracking with a ${GOAL_WORD}-meeting weekly goal.`:'Phase One shows the original schedule and attendance requirements.';
  for(const el of document.querySelectorAll('.goal-word'))el.textContent=GOAL_WORD;
  $('install-note').hidden=!(tracking&&isIOS&&!isStandalone());
  $('backup-reminder').hidden=!(tracking&&!blocked&&!reminderSnoozed&&backupDue());
- $('backup-reminder-text').textContent=store.lastBackup?`Your last backup was more than ${BACKUP_REMINDER_DAYS} days ago, and you’ve logged meetings since.`:'You haven’t backed up your attendance records yet.';
+ $('backup-reminder-text').textContent=store.lastBackup?`Your last backup was more than ${BACKUP_REMINDER_DAYS} days ago, and your records have changed since.`:'You haven’t backed up your records yet.';
 
  const {next,nextDay}=renderOverview(now,tracking);
+ renderCheckin(now);
  if(tracking)renderWeek(now);
  renderSchedule(now,tracking,next,nextDay);
  if(tracking)renderHistory(now);
 
  $('backup-info').textContent=store.lastBackup?`Last backup: ${dallasStamp(store.lastBackup)} Dallas time. Keep the file somewhere safe.`:'No backup saved yet.';
+ $('connection').classList.toggle('offline',!navigator.onLine);
  $('connection').textContent=navigator.onLine?(tracking?'Saved on device':'Daily schedule'):(tracking?'Offline · saved on device':'Offline');
 }
 function setView(next){
@@ -356,6 +365,55 @@ async function deliver(content,name,type,{title,text}={}){
  }
  download(content,name,type);return 'downloaded';
 }
+
+/* ---------- Calendars ---------- */
+// Each feed is a static .ics file next to the app, rebuilt by tools/build-calendar.mjs.
+function wireCalendar({feedFile,subscribe,google,download:downloadButton,build,fileName,done,leadWithGoogle=true}){
+ const feed=new URL('./'+feedFile,location.href);
+ const webcal='webcal://'+feed.host+feed.pathname;
+ $(subscribe).href=webcal;
+ $(google).href='https://calendar.google.com/calendar/r?cid='+encodeURIComponent(webcal);
+ // Android has no webcal handler; hide Subscribe there.
+ if(/Android/i.test(navigator.userAgent)){$(subscribe).hidden=true;if(leadWithGoogle)$(google).classList.add('primary');}
+ $(downloadButton).onclick=()=>{download(build(),fileName,'text/calendar;charset=utf-8');status(done);};
+}
+wireCalendar({feedFile:'phase-one-mandatory.ics',subscribe:'calendar-subscribe',google:'calendar-google',download:'calendar-download',build:phaseOneMandatoryCalendar,fileName:'phase-one-mandatory-meetings.ics',done:'Calendar file downloaded. Open it to add the meetings to your calendar.'});
+wireCalendar({feedFile:'weekly-checkin.ics',subscribe:'checkin-cal-subscribe',google:'checkin-cal-google',download:'checkin-cal-download',build:weeklyCheckinCalendar,fileName:'weekly-check-in-reminder.ics',done:'Calendar file downloaded. Open it and choose Add All to get the Sunday reminder.',leadWithGoogle:false});
+
+/* ---------- Weekly check-in ---------- */
+const checkinFor=week=>store.checkins?.[week]||{sheet:null,addon:null};
+const checkinDone=c=>!!(c.sheet&&c.addon);
+const CHECKIN_LABEL=c=>checkinDone(c)?'Done':c.sheet||c.addon?'Partly done':'Not marked';
+// Shown only when the schedule is on a Saturday or Sunday; it tracks the check-in for the week being viewed.
+function renderCheckin(now){
+ const weekday=dateFor(selected).getUTCDay(),card=$('checkin-card');
+ card.hidden=!(weekday===0||weekday===6);
+ if(card.hidden)return;
+ const week=weekStart(selected),sunday=shiftDate(week,6),c=checkinFor(week),done=checkinDone(c);
+ const past=sunday<now.date,soon=sunday===now.date||sunday===shiftDate(now.date,1);
+ card.dataset.week=week;
+ card.className='checkin'+(done?' done':(past||soon)?' due':'');
+ $('checkin-sheet').checked=!!c.sheet;$('checkin-addon').checked=!!c.addon;
+ const sun=fmt(sunday,{weekday:'short',month:'short',day:'numeric'}).toUpperCase();
+ $('checkin-due').textContent=done?'✓ DONE':past?`WAS DUE ${sun}`:sunday===now.date?'DUE TODAY':sunday===shiftDate(now.date,1)?'DUE TOMORROW':`DUE ${sun}`;
+ const range=`${fmt(week,{month:'short',day:'numeric'})} – ${fmt(sunday,{month:'short',day:'numeric'})}`;
+ $('checkin-message').textContent=done?`Your check-in for ${range} is marked done.`
+  :past?`The check-in for ${range} isn’t marked done. If you turned it in, check it off below.`
+  :c.sheet?'Sheet turned in. Don’t forget to scan the QR code for the add-on check-in.'
+  :c.addon?'Add-on check-in done. Don’t forget to turn in the sheet.'
+  :`Turn in your completed check-in sheet by Sunday${sunday===now.date?' (today)':''}, and scan its QR code for the quick add-on check-in.`;
+ $('checkin-link').hidden=!CHECKIN_FORM_URL||done;
+ if(CHECKIN_FORM_URL)$('checkin-link').href=CHECKIN_FORM_URL;
+}
+function setCheckin(field,checked){
+ const week=$('checkin-card').dataset.week,at=new Date().toISOString(),c=checkinFor(week);
+ const next={...store,checkins:{...(store.checkins||{}),[week]:{sheet:c.sheet??null,addon:c.addon??null,[field]:checked?at:null,updatedAt:at}}};
+ if(!persist(next)){render();return;}
+ render();
+ if(checkinDone(checkinFor(week)))status('Weekly check-in marked done.');
+}
+$('checkin-sheet').onchange=e=>setCheckin('sheet',e.target.checked);
+$('checkin-addon').onchange=e=>setCheckin('addon',e.target.checked);
 
 /* ---------- Backups ---------- */
 async function backup(safety=false){
@@ -393,16 +451,16 @@ function report(){
   const weeks=weekSummaries();
   return {scope,slug:'weekly-summary',range:'Week-by-week summary (Monday–Sunday)',
    summary:`${weeks.length} weeks · ${weeks.filter(w=>w.status==='met').length} met · ${weeks.filter(w=>w.status==='missed').length} missed · goal ${GOAL} per week`,
-   columns:['Week (Mon–Sun)','Counted meetings','Logged meetings','Status'],
-   rows:weeks.map(w=>[weekLabel(w.week),`${w.counted} of ${GOAL}`,String(w.logged),STATUS_LABEL[w.status]]),
-   csv:[['Week starting','Week ending','Counted meetings','Logged meetings','Weekly goal','Status'],...weeks.map(w=>[w.week,shiftDate(w.week,6),w.counted,w.logged,GOAL,STATUS_LABEL[w.status]])],
-   lines:weeks.map(w=>`${weekLabel(w.week)}: ${w.counted} of ${GOAL} · ${STATUS_LABEL[w.status]}`)};
+   columns:['Week (Mon–Sun)','Counted meetings','Logged meetings','Status','Weekly check-in'],
+   rows:weeks.map(w=>[weekLabel(w.week),ofGoal(w.counted),String(w.logged),STATUS_LABEL[w.status],w.checkin]),
+   csv:[['Week starting','Week ending','Counted meetings','Logged meetings','Weekly goal','Status','Weekly check-in'],...weeks.map(w=>[w.week,shiftDate(w.week,6),w.counted,w.logged,GOAL,STATUS_LABEL[w.status],w.checkin])],
+   lines:weeks.map(w=>`${weekLabel(w.week)}: ${ofGoal(w.counted)} · ${STATUS_LABEL[w.status]} · check-in ${w.checkin.toLowerCase()}`)};
  }
  const records=historyRecords(),counted=records.filter(countsToward).length,week=weekStart(historyDate);
  const chronological=[...records].reverse();
  return {scope,slug:scope==='all'?'all':`week-of-${week}`,
   range:scope==='all'?'All logged attendance':`Monday ${fmt(week)} – Sunday ${fmt(shiftDate(week,6))}`,
-  summary:`${records.length} logged · ${counted} counted toward weekly goals`+(scope==='week'?` · ${counted} of ${GOAL} · ${STATUS_LABEL[weekStatus(week,counted,now)]}`:''),
+  summary:`${records.length} logged · ${counted} counted toward weekly goals`+(scope==='week'?` · ${ofGoal(counted)} · ${STATUS_LABEL[weekStatus(week,counted,now)]}`:''),
   columns:['Date / time','Meeting / location','Goal','Recorded / changed'],
   rows:chronological.map(r=>[`${fmt(r.date)} ${timeLabel(r.time)}`,[r.title,kindLabel(r),place(r),r.notes].filter(Boolean).join('\n'),countsToward(r)?'Counts':'Not counted',`Recorded: ${dallasStamp(r.createdAt)}\nChanged: ${dallasStamp(r.updatedAt)}`]),
   csv:[['Meeting date','Start time (Dallas)','Meeting','Location','Meeting type','Counts toward goal','Notes','Recorded at','Last changed at'],...chronological.map(r=>[r.date,r.time,r.title,place(r),kindLabel(r),countsToward(r)?'Yes':'No',r.notes,r.createdAt,r.updatedAt])],

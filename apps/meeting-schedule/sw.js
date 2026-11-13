@@ -1,19 +1,30 @@
 // Bump VERSION when icons or the scan image change. Edits to the HTML, CSS, JS, and
 // manifest are picked up automatically: the app checks for them when it opens online.
-const VERSION='v7';
+const VERSION='v8';
 const PREFIX='daily-meetings-'+encodeURIComponent(self.registration.scope)+'-';
 const CACHE=PREFIX+VERSION;
 const CORE=['./','./index.html','./style.css','./app.js','./schedule.js','./storage.js','./manifest.webmanifest'];
 const STATIC=['./icon.svg','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-any-192.png','./icons/icon-any-512.png','./schedule-scan.jpeg'];
 
-self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(c=>c.addAll([...CORE,...STATIC].map(u=>new Request(u,{cache:'reload'}))))));
+// Safari won't open a page from a saved response that came through a redirect (some hosts
+// redirect index.html to /), so store a plain copy of anything that was redirected.
+async function clean(res){
+ if(!res.redirected)return res;
+ return new Response(await res.blob(),{status:res.status,statusText:res.statusText,headers:res.headers});
+}
+async function fetchClean(url,cacheMode){const res=await fetch(url,{cache:cacheMode});if(!res.ok)throw Error(url);return clean(res);}
+self.addEventListener('install',event=>event.waitUntil((async()=>{
+ const cache=await caches.open(CACHE);
+ const all=[...CORE,...STATIC],responses=await Promise.all(all.map(u=>fetchClean(u,'reload')));
+ await Promise.all(responses.map((res,i)=>cache.put(all[i],res)));
+})()));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith(PREFIX)&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 
 // Download every core file; replace the saved copy only if all succeed and something changed,
 // so the app never runs with a mix of old and new files.
 async function refresh(){
  const cache=await caches.open(CACHE);
- const fresh=await Promise.all(CORE.map(async url=>{const res=await fetch(url,{cache:'no-cache'});if(!res.ok)throw Error(url);return [url,res];}));
+ const fresh=await Promise.all(CORE.map(async url=>[url,await fetchClean(url,'no-cache')]));
  let changed=false;
  for(const [url,res] of fresh){const old=await cache.match(url);if(!old||await old.text()!==await res.clone().text()){changed=true;break;}}
  if(!changed)return false;
