@@ -1,51 +1,473 @@
-import {dallasNow,dateFor,shiftDate,meetingsFor,timeMinutes,timeLabel,ZONE,inProgressMeetings,DEFAULT_DURATION_MINUTES} from './schedule.js';
+import {dallasNow,dateFor,shiftDate,meetingsFor,timeMinutes,timeLabel,endTime,isInProgress,inProgressMeetings,ruleFor,RULES,WEEKLY_GOAL} from './schedule.js';
+import {KEY,emptyStore,validateStore,mergeStores} from './storage.js';
+
 const $=id=>document.getElementById(id);
-let actual=dallasNow(),selected=actual.date,followingToday=true;
-const labels={optional:'Optional',conditional:'Attend or be off property',mandatory:'Mandatory'};
+const PHASE_KEY='d24-resident-phase-v1';
+const CLUB='Dallas 24 Hour Club';
+const HOUSE=/house meeting/i;
+const GOAL=WEEKLY_GOAL;
+const GOAL_WORD=['zero','one','two','three','four','five','six','seven','eight','nine','ten'][GOAL]??String(GOAL);
+const DALLAS={timeZone:'America/Chicago'};
+const BACKUP_REMINDER_DAYS=7;
+
+const meetingKind=r=>r.kind||(r.location===CLUB?'club':'outside');
+const kindLabel=r=>meetingKind(r)==='outside'?'Outside meeting':'24 Hour Club';
+const isHouseMeeting=r=>meetingKind(r)==='club'&&HOUSE.test(r.title);
+// The house meeting is mandatory but never counts toward the weekly goal.
+const countsToward=r=>r.counts&&!isHouseMeeting(r);
+// Older outside entries saved the group name as the location when no address was given.
+const place=r=>r.location&&r.location.trim().toLowerCase()!==r.title.trim().toLowerCase()?r.location:'';
+const dallasStamp=iso=>new Date(iso).toLocaleString('en-US',DALLAS);
+const fmt=(d,options={month:'short',day:'numeric',year:'numeric'})=>dateFor(d).toLocaleDateString('en-US',{timeZone:'UTC',...options});
+const weekLabel=w=>`${fmt(w,{month:'short',day:'numeric'})} – ${fmt(shiftDate(w,6),{month:'short',day:'numeric',year:'numeric'})}`;
+export function weekStart(date){const weekday=dateFor(date).getUTCDay();return shiftDate(date,-((weekday+6)%7));}
+
+const isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const isStandalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+
+/* ---------- State ---------- */
+let phase='one';
+try{if(localStorage.getItem(PHASE_KEY)==='two')phase='two';}catch{}
+let store=emptyStore(),blocked=false;
+try{const raw=localStorage.getItem(KEY);if(raw)store=validateStore(JSON.parse(raw));}catch{blocked=true;}
+let today=dallasNow().date,selected=today,historyDate=today,view='schedule';
+let reminderSnoozed=false;
+
+/* ---------- DOM helpers ---------- */
+function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+function button(text,action,cls,fkey){const b=node('button',text,cls);b.type='button';b.onclick=action;if(fkey)b.dataset.fkey=fkey;return b;}
+// Rebuild a container only when its content actually changes, and keep keyboard/VoiceOver focus on the same control.
+function keyed(el,key,build){
+ if(el.dataset.key===key)return;
+ const focused=el.contains(document.activeElement)?document.activeElement.dataset.fkey:null;
+ el.dataset.key=key;el.replaceChildren(...build());
+ if(focused)el.querySelector(`[data-fkey="${CSS.escape(focused)}"]`)?.focus();
+}
+function setValue(input,value){if(input.value!==value&&document.activeElement!==input)input.value=value;}
+
+/* ---------- Status messages ---------- */
+let statusTimer;
+function clearStatus(){clearTimeout(statusTimer);$('status').replaceChildren();}
+function status(message,{action,actionLabel='Undo',sticky=false}={}){
+ clearTimeout(statusTimer);
+ $('status').replaceChildren(node('span',message));
+ if(action)$('status').append(button(actionLabel,()=>{clearStatus();action();}));
+ if(!sticky)statusTimer=setTimeout(clearStatus,action?10000:6000);
+}
+
+/* ---------- Saving ---------- */
+let persistenceRequested=false;
+function requestPersistence(){if(persistenceRequested)return;persistenceRequested=true;navigator.storage?.persist?.().catch(()=>{});}
+function persist(next){
+ if(blocked){status('Storage could not be read. Your existing data has been protected. Export the raw data or restore a valid backup before saving.',{sticky:true});return false;}
+ try{localStorage.setItem(KEY,JSON.stringify(next));store=next;return true;}
+ catch{status('Could not save. Device storage may be full or unavailable. Your change was not saved. Download a backup of your existing records.',{sticky:true});return false;}
+}
+function snapshot(r){const {changes,...rest}=r;return rest;}
+function changeRecord(r,action){const next={...r,updatedAt:new Date().toISOString()};next.changes=[...(r.changes||[]),{at:next.updatedAt,action,snapshot:snapshot(next)}];return next;}
+function saveRecord(record,action){const updated=changeRecord(record,action);const next={...store,records:[...store.records.filter(r=>r.id!==updated.id),updated]};if(!persist(next))return false;requestPersistence();render();return true;}
+
+const active=()=>store.records.filter(r=>!r.deleted);
+const byNewest=(a,b)=>(b.date+b.time).localeCompare(a.date+a.time);
+// The Club holds one meeting per time slot, so a Club record at that date and time is that meeting, even if renamed.
+const clubRecordAt=(date,time)=>active().find(r=>meetingKind(r)==='club'&&r.date===date&&r.time===time);
+const isFuture=(date,time,now=dallasNow())=>date>now.date||(date===now.date&&timeMinutes(time)>now.minutes);
+
+function removeRecord(r){
+ if(!confirm(`Remove ${r.title} on ${fmt(r.date)} from your attendance? A removal entry stays in your backup.`))return;
+ if(saveRecord({...r,deleted:true},'removed'))status('Attendance removed.',{action:()=>{const found=store.records.find(x=>x.id===r.id);if(found?.deleted&&saveRecord({...found,deleted:false},'restored'))status('Attendance restored.');}});
+}
+function markMeeting(m,date){
+ if(phase!=='two')return;
+ if(isFuture(date,m.time)){status('You can log this meeting after it starts.');return;}
+ if(clubRecordAt(date,m.time)){status('This meeting is already in your record.');render();return;}
+ const at=new Date().toISOString(),id=crypto.randomUUID();
+ const r={id,date,time:m.time,title:m.title,kind:'club',location:CLUB,notes:'',counts:m.counts!==false,deleted:false,createdAt:at,updatedAt:at,changes:[]};
+ if(saveRecord(r,'created'))status(m.counts===false?'Attendance saved. The house meeting doesn’t count toward your weekly goal.':'Attendance saved on this device.',{action:()=>{const saved=store.records.find(x=>x.id===id);if(saved&&!saved.deleted&&saveRecord({...saved,deleted:true},'removed'))status('Attendance undone.');}});
+}
+
+/* ---------- Phase ---------- */
+function openPhase(){$('resident-phase').value=phase;$('phase-error').textContent='';$('phase-dialog').showModal();}
+$('change-phase').onclick=openPhase;
+$('settings-change-phase').onclick=openPhase;
+$('cancel-phase').onclick=()=>$('phase-dialog').close();
+$('phase-form').onsubmit=e=>{
+ e.preventDefault();const next=$('resident-phase').value;
+ if(!['one','two'].includes(next))return;
+ try{localStorage.setItem(PHASE_KEY,next);}catch{$('phase-error').textContent='Could not save your phase on this device. Check browser storage and try again.';return;}
+ phase=next;if(phase==='two')requestPersistence();
+ $('entry-dialog').close();$('phase-dialog').close();clearStatus();setView('schedule');
+};
+
+/* ---------- Entry form ---------- */
+function openEntry(r){
+ if(phase!=='two')return;
+ const now=dallasNow();
+ $('entry-form').reset();
+ $('entry-id').value=r?.id||'';
+ $('entry-heading').textContent=r?'Edit attendance':'Log an outside meeting';
+ $('entry-date').max=now.date;
+ $('entry-date').value=r?.date||(selected>now.date?now.date:selected);
+ $('entry-time').value=r?.time||'';
+ $('entry-title').value=r?.title||'';
+ $('entry-kind').value=r?meetingKind(r):'outside';
+ $('entry-location').value=r?(meetingKind(r)==='outside'?place(r):r.location):'';
+ $('entry-notes').value=r?.notes||'';
+ $('entry-counts').checked=r?.counts??true;
+ updateEntryKind();
+ $('form-error').textContent='';
+ $('entry-dialog').showModal();
+}
+function updateEntryKind(){
+ const outside=$('entry-kind').value==='outside';
+ $('location-label').textContent=outside?'Location / address (optional)':'Location';
+ $('entry-location').required=!outside;
+ if(!outside&&!$('entry-location').value.trim())$('entry-location').value=CLUB;
+ if(outside&&$('entry-location').value===CLUB)$('entry-location').value='';
+ $('entry-help').textContent=outside?`Enter the group, date, and start time. Outside meetings count toward your ${GOAL_WORD} for the week.`:'Log a Club meeting that is missing from the schedule, or edit an existing attendance record.';
+ updateCounts();
+}
+function updateCounts(){
+ const house=$('entry-kind').value==='club'&&HOUSE.test($('entry-title').value);
+ $('entry-counts').disabled=house;if(house)$('entry-counts').checked=false;
+ $('counts-hint').hidden=!house;
+}
+$('entry-kind').onchange=updateEntryKind;
+$('entry-title').oninput=updateCounts;
+$('cancel-entry').onclick=()=>$('entry-dialog').close();
+$('entry-form').onsubmit=e=>{
+ e.preventDefault();if(phase!=='two')return;
+ const error=msg=>{$('form-error').textContent=msg;};
+ const old=store.records.find(r=>r.id===$('entry-id').value);
+ const date=$('entry-date').value,time=$('entry-time').value,kind=$('entry-kind').value;
+ const title=$('entry-title').value.trim(),location=$('entry-location').value.trim();
+ if(!title)return error('Enter a meeting name.');
+ if(kind==='club'&&!location)return error('Enter a location.');
+ if(!date||!time)return error('Enter a date and start time.');
+ if(isFuture(date,time))return error('Future meetings cannot be marked attended.');
+ const duplicate=active().find(r=>r.id!==old?.id&&r.date===date&&r.time===time&&((kind==='club'&&meetingKind(r)==='club')||r.title.trim().toLowerCase()===title.toLowerCase()));
+ if(duplicate)return error(kind==='club'&&meetingKind(duplicate)==='club'?`Your record already has the ${timeLabel(time)} Club meeting on this date (“${duplicate.title}”). Edit that entry instead.`:'This meeting is already in your record.');
+ const counts=$('entry-counts').checked&&!(kind==='club'&&HOUSE.test(title));
+ const at=new Date().toISOString();
+ const r={...(old||{id:crypto.randomUUID(),createdAt:at,changes:[]}),date,time,title,kind,location,notes:$('entry-notes').value.trim(),counts,deleted:false};
+ if(saveRecord(r,old?'edited':'created')){$('entry-dialog').close();status(old?'Attendance updated. Change history kept.':'Attendance saved on this device.');}
+};
+
+/* ---------- Weekly summaries ---------- */
+function weekStatus(week,counted,now=dallasNow()){
+ const current=weekStart(now.date);
+ if(week>current)return 'upcoming';
+ if(counted>=GOAL)return 'met';
+ return week===current?'current':'missed';
+}
+const STATUS_LABEL={met:'Goal met',missed:'Goal missed',current:'In progress',upcoming:'Not started'};
+function weekSummaries(){
+ const recs=active();if(!recs.length)return [];
+ const first=weekStart(recs.reduce((min,r)=>r.date<min?r.date:min,recs[0].date));
+ const out=[];
+ for(let w=weekStart(dallasNow().date);w>=first&&out.length<520;w=shiftDate(w,-7)){
+  const rs=recs.filter(r=>weekStart(r.date)===w),counted=rs.filter(countsToward).length;
+  out.push({week:w,logged:rs.length,counted,status:weekStatus(w,counted)});
+ }
+ return out;
+}
+
+/* ---------- Rendering ---------- */
+function ruleBadge(m){const rule=ruleFor(m,phase);return node('span',RULES[phase][rule].label,'rule');}
+function rowClass(m){
+ if(phase!=='two')return ' '+m.rule;
+ return ruleFor(m,'two')==='common'?'':' mandatory';
+}
+
+function renderOverview(now,tracking){
+ let next=meetingsFor(now.date).find(m=>timeMinutes(m.time)>now.minutes),nextDay=now.date;
+ if(!next){nextDay=shiftDate(now.date,1);next=meetingsFor(nextDay)[0];}
+ const wait=timeMinutes(next.time)-now.minutes+(nextDay===now.date?0:1440);
+ const remaining=wait<60?`${wait} min`:`${Math.floor(wait/60)}h ${wait%60}m`;
+ $('live-date').textContent=fmt(now.date,{month:'short',day:'numeric'});
+ $('next-label').textContent=nextDay===now.date?'NEXT MEETING TODAY':`NEXT MEETING · TOMORROW, ${fmt(nextDay,{weekday:'long'}).toUpperCase()}`;
+ $('next-title').textContent=next.title;
+ $('next-detail').textContent=`${timeLabel(next.time)} · ${RULES[phase][ruleFor(next,phase)].label} · Starts in ${remaining}`;
+
+ const ongoing=inProgressMeetings(now.date,now.minutes);
+ $('in-progress').hidden=ongoing.length===0;
+ keyed($('in-progress'),JSON.stringify([now.date,phase,ongoing.map(m=>m.time)]),()=>{
+  if(!ongoing.length)return [];
+  return [node('p',ongoing.length===1?'IN PROGRESS NOW':'MEETINGS IN PROGRESS','eyebrow'),...ongoing.flatMap(m=>[node('h2',m.title),node('p',`${timeLabel(m.time)} – ${timeLabel(endTime(m.time))} · ${RULES[phase][ruleFor(m,phase)].label}`,'progress-detail')])];
+ });
+ return {next,nextDay};
+}
+
+function renderWeek(now){
+ const week=weekStart(view==='schedule'?selected:historyDate);
+ const counted=active().filter(r=>countsToward(r)&&weekStart(r.date)===week),total=counted.length;
+ const state=weekStatus(week,total,now);
+ $('week-range').textContent=`${fmt(week,{month:'short',day:'numeric'})} – ${fmt(shiftDate(week,6),{month:'short',day:'numeric'})}`;
+ $('weekly-total').textContent=`${total} of ${GOAL} meetings attended`;
+ $('progress').max=GOAL;$('progress').value=Math.min(total,GOAL);
+ $('weekly-message').textContent={
+  met:week===weekStart(now.date)?'Weekly goal reached. Keep showing up.':`Goal met that week — ${total} counted meeting${total===1?'':'s'}.`,
+  missed:`Goal missed that week — ${total} of ${GOAL}.`,
+  current:`${GOAL-total} more to reach your weekly goal.`,
+  upcoming:'This week hasn’t started yet.'
+ }[state];
+ $('weekly-message').className=state==='missed'?'missed':'';
+ const days=Array.from({length:7},(_,i)=>{const date=shiftDate(week,i);return {date,count:counted.filter(r=>r.date===date).length};});
+ keyed($('week-days'),JSON.stringify([days,selected]),()=>days.map(({date,count})=>{
+  const b=button(`${fmt(date,{weekday:'short'})} ${date.slice(-2)}${count?' ✓ '+count:''}`,()=>{selected=date;setView('schedule');},'week-day'+(date===selected?' selected':''),'day-'+date);
+  b.setAttribute('aria-label',`${fmt(date)}: ${count} qualifying meeting${count===1?'':'s'}`);return b;
+ }));
+}
+
+function renderSchedule(now,tracking,next,nextDay){
+ setValue($('selected-date'),selected);
+ $('day-heading').textContent=fmt(selected,{weekday:'long'});
+ $('today').hidden=selected===now.date;
+ const rows=meetingsFor(selected).map(m=>{
+  const isToday=selected===now.date;
+  const state=isFuture(selected,m.time,now)?'future':isToday&&isInProgress(m,now.minutes)?'live':'past';
+  return {m,state,next:isToday&&nextDay===now.date&&next.time===m.time,r:tracking?clubRecordAt(selected,m.time):null};
+ });
+ $('count').textContent=`${rows.length} scheduled meetings`;
+ const key=JSON.stringify([phase,selected,rows.map(({m,state,next,r})=>[m.time,m.title,state,next,r?.id,r?.updatedAt])]);
+ keyed($('meetings'),key,()=>rows.map(({m,state,next,r})=>{
+  const row=node('article',undefined,'meeting'+rowClass(m)+(r?' attended':''));
+  const body=node('div',undefined,'meeting-body');
+  body.append(node('h3',m.title),ruleBadge(m));
+  if(m.note)body.append(node('p',m.note,'note'));
+  if(r){
+   if(r.title!==m.title)body.append(node('span',`Logged as “${r.title}”`,'attended-label'));
+   body.append(node('span',countsToward(r)?'✓ Attended · counts toward goal':isHouseMeeting(r)?'✓ Attended · doesn’t count toward goal':'✓ Attended · not counted','attended-label'));
+   body.append(button('Edit record',()=>openEntry(r),'text-button','edit-'+r.id));
+  }else if(tracking){
+   const b=button('Mark attended',()=>markMeeting(m,selected),'attend-button','mark-'+m.time);b.disabled=state==='future';body.append(b);
+  }
+  if(state==='live')body.append(node('span','IN PROGRESS','upcoming-label'));
+  else if(next)body.append(node('span','UP NEXT','upcoming-label'));
+  else if(tracking&&!r&&state==='future')body.append(node('p','Available after the meeting starts.','hint'));
+  else if(!tracking&&selected===now.date&&state==='past')body.append(node('span','Started earlier','past'));
+  row.append(node('div',timeLabel(m.time),'time'),body);
+  return row;
+ }));
+}
+
+function historyRecords(){
+ const scope=$('history-scope').value,all=active().sort(byNewest);
+ return scope==='week'?all.filter(r=>weekStart(r.date)===weekStart(historyDate)):all;
+}
+function recordCard(r){
+ const item=node('article',undefined,'record');
+ item.append(node('p',`${fmt(r.date,{weekday:'short',month:'short',day:'numeric',year:'numeric'})} · ${timeLabel(r.time)}`,'eyebrow'),node('h3',r.title),node('span',kindLabel(r),'meeting-kind'));
+ const where=place(r);if(where&&!(meetingKind(r)==='club'&&where===CLUB))item.append(node('p',where));
+ item.append(node('p',countsToward(r)?'Counts toward weekly goal':isHouseMeeting(r)?'House meeting · doesn’t count toward weekly goal':'Not counted toward weekly goal','hint'));
+ if(r.notes)item.append(node('p',r.notes,'record-notes'));
+ item.append(node('p',`Recorded ${dallasStamp(r.createdAt)} Dallas time`,'hint'));
+ if(r.changes.length>1)item.append(node('p',`Last changed ${dallasStamp(r.updatedAt)} · ${r.changes.length-1} change(s)`,'hint'));
+ const actions=node('div',undefined,'actions');
+ actions.append(button('Edit',()=>openEntry(r),undefined,'edit-'+r.id),button('Remove',()=>removeRecord(r),undefined,'remove-'+r.id));
+ item.append(actions);return item;
+}
+function renderHistory(now){
+ const scope=$('history-scope').value;
+ setValue($('history-date'),historyDate);
+ $('history-date-label').hidden=scope!=='week';
+ $('share-report').textContent=canShareFiles()?'Share with staff':'Download report';
+ if(scope==='weeks'){
+  const weeks=weekSummaries();
+  $('history-summary').textContent=weeks.length?`${weeks.length} week${weeks.length===1?'':'s'} · ${weeks.filter(w=>w.status==='met').length} met · ${weeks.filter(w=>w.status==='missed').length} missed`:'';
+  keyed($('history-list'),JSON.stringify(['weeks',weeks]),()=>weeks.length?weeks.map(w=>{
+   const b=button('',()=>{historyDate=w.week;$('history-scope').value='week';render();},'week-card '+w.status,'week-'+w.week);
+   b.append(node('span',weekLabel(w.week),'week-card-range'),node('span',`${w.counted} of ${GOAL} counted${w.logged>w.counted?` · ${w.logged} logged`:''}`,'week-card-count'),node('span',STATUS_LABEL[w.status],'status-chip'));
+   b.setAttribute('aria-label',`${weekLabel(w.week)}: ${w.counted} of ${GOAL} counted, ${STATUS_LABEL[w.status]}. Show this week.`);
+   return b;
+  }):[node('p','No meetings logged yet. Weeks appear here once you log your first meeting.','empty')]);
+  return;
+ }
+ const records=historyRecords();
+ let summary=`${records.length} meeting${records.length===1?'':'s'} logged · ${records.filter(countsToward).length} counted toward goals`;
+ if(scope==='week')summary+=` · ${STATUS_LABEL[weekStatus(weekStart(historyDate),records.filter(countsToward).length,now)]}`;
+ $('history-summary').textContent=summary;
+ keyed($('history-list'),JSON.stringify([scope,records.map(r=>r.id+r.updatedAt)]),()=>records.length?records.map(recordCard):[node('p','No meetings logged for this range. Check one off in the schedule or log an outside meeting.','empty')]);
+}
+
+function backupDue(){
+ if(!store.records.length)return false;
+ const last=store.lastBackup?Date.parse(store.lastBackup):0;
+ if(!store.records.some(r=>Date.parse(r.updatedAt)>last))return false;
+ const since=last||Math.min(...store.records.map(r=>Date.parse(r.createdAt)));
+ return Date.now()-since>BACKUP_REMINDER_DAYS*864e5;
+}
+
 function render(){
- actual=dallasNow(); if(followingToday)selected=actual.date;
- const today=selected===actual.date;const list=meetingsFor(selected);
- const active=inProgressMeetings(actual.date,actual.minutes);
- const activeTimes=new Set(active.map(m=>m.time));
- const nextToday=meetingsFor(actual.date).find(m=>timeMinutes(m.time)>actual.minutes);
- const banner=$('in-progress');
- const bannerKey=JSON.stringify([actual.date,active]);
- banner.hidden=active.length===0;
- if(banner.dataset.key!==bannerKey){
-  banner.dataset.key=bannerKey;banner.replaceChildren();
-  if(active.length){
-   const heading=document.createElement('p');heading.className='eyebrow';heading.textContent=active.length===1?'IN PROGRESS NOW':'MEETINGS IN PROGRESS';banner.append(heading);
-   active.forEach(m=>{
-    const title=document.createElement('h2');title.textContent=m.title;
-    const detail=document.createElement('p');detail.className='progress-detail';
-    const end=(timeMinutes(m.time)+(m.durationMinutes??DEFAULT_DURATION_MINUTES))%1440;
-    const endTime=`${String(Math.floor(end/60)).padStart(2,'0')}:${String(end%60).padStart(2,'0')}`;
-    detail.textContent=`${timeLabel(m.time)} – ${timeLabel(endTime)} · ${labels[m.rule]}`;
-    banner.append(title,detail);
-   });
+ const tracking=phase==='two';
+ const now=dallasNow();
+ // If the app stays open (or is resumed) past midnight, move "today" views forward.
+ if(now.date!==today){if(selected===today)selected=now.date;if(historyDate===today)historyDate=now.date;today=now.date;}
+
+ $('phase-indicator').textContent=tracking?'Phase Two':'Phase One';
+ $('overview-phase').textContent=tracking?'PHASE TWO':'PHASE ONE';
+ for(const id of ['attendance-overview','record-tabs','outside-callout','attendance-tools','phase-two-key'])$(id).hidden=!tracking;
+ $('phase-one-key').hidden=tracking;
+ $('schedule-view').hidden=view!=='schedule';$('history-view').hidden=!tracking||view!=='history';
+ $('intro-eyebrow').textContent=tracking?'YOUR RECOVERY, YOUR RECORD':'YOUR DAY, AT A GLANCE';
+ $('intro-subtitle').textContent=tracking?'Your schedule, with a personal record of showing up.':'A little clarity for the day ahead.';
+ $('settings-phase-description').textContent=tracking?`Phase Two shows Phase Two requirements and adds personal attendance tracking with a ${GOAL_WORD}-meeting weekly goal.`:'Phase One shows the original schedule and attendance requirements.';
+ for(const el of document.querySelectorAll('.goal-word'))el.textContent=GOAL_WORD;
+ $('install-note').hidden=!(tracking&&isIOS&&!isStandalone());
+ $('backup-reminder').hidden=!(tracking&&!blocked&&!reminderSnoozed&&backupDue());
+ $('backup-reminder-text').textContent=store.lastBackup?`Your last backup was more than ${BACKUP_REMINDER_DAYS} days ago, and you’ve logged meetings since.`:'You haven’t backed up your attendance records yet.';
+
+ const {next,nextDay}=renderOverview(now,tracking);
+ if(tracking)renderWeek(now);
+ renderSchedule(now,tracking,next,nextDay);
+ if(tracking)renderHistory(now);
+
+ $('backup-info').textContent=store.lastBackup?`Last backup: ${dallasStamp(store.lastBackup)} Dallas time. Keep the file somewhere safe.`:'No backup saved yet.';
+ $('connection').textContent=navigator.onLine?(tracking?'Saved on device':'Daily schedule'):(tracking?'Offline · saved on device':'Offline');
+}
+function setView(next){
+ if(phase!=='two')next='schedule';
+ if(next!==view)clearStatus();
+ view=next;
+ for(const name of ['schedule','history']){if(name===next)$(name+'-tab').setAttribute('aria-current','page');else $(name+'-tab').removeAttribute('aria-current');}
+ render();
+}
+$('schedule-tab').onclick=()=>setView('schedule');
+$('history-tab').onclick=()=>setView('history');
+$('prev').onclick=()=>{selected=shiftDate(selected,-1);render();};
+$('next').onclick=()=>{selected=shiftDate(selected,1);render();};
+$('today').onclick=()=>{selected=dallasNow().date;render();};
+$('selected-date').onchange=e=>{if(e.target.value){selected=e.target.value;render();}};
+$('history-date').onchange=e=>{if(e.target.value){historyDate=e.target.value;render();}};
+$('history-scope').onchange=render;
+$('add-meeting').onclick=()=>openEntry();
+
+/* ---------- Files: share sheet on phones, download elsewhere ---------- */
+function download(content,name,type){const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+function canShareFiles(){try{return matchMedia('(pointer:coarse)').matches&&!!navigator.canShare?.({files:[new File(['x'],'x.txt',{type:'text/plain'})]});}catch{return false;}}
+// Must be called directly from a tap so the share sheet is allowed to open.
+async function deliver(content,name,type,{title,text}={}){
+ if(canShareFiles()){
+  const file=new File([content],name,{type});
+  if(navigator.canShare({files:[file]})){
+   try{await navigator.share(text?{files:[file],title,text}:{files:[file],title});return 'shared';}
+   catch(err){if(err.name==='AbortError')return 'cancelled';}
   }
  }
- $('live-date').textContent=dateFor(actual.date).toLocaleDateString('en-US',{timeZone:'UTC',month:'short',day:'numeric'});
- $('next-label').textContent=nextToday?'NEXT MEETING TODAY':'TODAY’S START TIMES HAVE PASSED';
- $('next-title').textContent=nextToday?nextToday.title:'One day at a time.';
- $('next-detail').textContent=nextToday?`${timeLabel(nextToday.time)} · ${labels[nextToday.rule]} · ${timeMinutes(nextToday.time)===actual.minutes?'Starts now':`Starts in ${timeMinutes(nextToday.time)-actual.minutes<60?`${timeMinutes(nextToday.time)-actual.minutes} min`:`${Math.floor((timeMinutes(nextToday.time)-actual.minutes)/60)}h ${(timeMinutes(nextToday.time)-actual.minutes)%60}m`}`}`:'Tomorrow’s schedule is ready when you are.';
- $('day-heading').textContent=dateFor(selected).toLocaleDateString('en-US',{weekday:'long',timeZone:'UTC'});
- $('date-label').textContent=(today?'Today · ':'')+dateFor(selected).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric',timeZone:'UTC'});
- $('count').textContent=`${list.length} meetings · Phase One`;$('today').hidden=today;
- const container=$('meetings');container.replaceChildren();
- list.forEach(m=>{const row=document.createElement('article');row.className=`meeting ${m.rule}`;
- const time=document.createElement('div');time.className='time';const [clock,period]=timeLabel(m.time).split(' ');time.textContent=clock;const sm=document.createElement('small');sm.textContent=period;time.append(sm);
- const body=document.createElement('div');body.className='meeting-body';const title=document.createElement('h3');title.textContent=m.title;const rule=document.createElement('span');rule.className='rule';rule.textContent=labels[m.rule];body.append(title,rule);
- if(today&&activeTimes.has(m.time)){const el=document.createElement('span');el.className='upcoming-label';el.textContent='IN PROGRESS';body.append(el);}
- if(today&&!activeTimes.has(m.time)&&timeMinutes(m.time)<actual.minutes){const el=document.createElement('span');el.className='past';el.textContent='Started earlier';body.append(el);}
- if(today&&nextToday?.time===m.time){const el=document.createElement('span');el.className='upcoming-label';el.textContent=timeMinutes(m.time)===actual.minutes?'STARTS NOW':'UP NEXT';body.append(el);}
- if(m.note){const el=document.createElement('p');el.className='note';el.textContent=m.note;body.append(el);}row.append(time,body);container.append(row);});
- $('clock').textContent=new Intl.DateTimeFormat('en-US',{timeZone:ZONE,hour:'numeric',minute:'2-digit'}).format(new Date());
- $('connection').textContent=navigator.onLine?'Daily schedule':'Offline';
+ download(content,name,type);return 'downloaded';
 }
-$('prev').onclick=()=>{followingToday=false;selected=shiftDate(selected,-1);render();};
-$('next').onclick=()=>{followingToday=false;selected=shiftDate(selected,1);render();};
-$('today').onclick=()=>{followingToday=true;render();};
-render();setInterval(render,15000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)render();});window.addEventListener('online',render);window.addEventListener('offline',render);
-let prompt;window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();prompt=e;$('install').hidden=false;});$('install').onclick=async()=>{await prompt.prompt();prompt=null;$('install').hidden=true;};
-if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').then(async reg=>{await navigator.serviceWorker.ready;$('offline-status').textContent='Offline access is ready on this device.';const offer=()=>{$('update').hidden=false;$('update').onclick=()=>reg.waiting?.postMessage('SKIP_WAITING');};if(reg.waiting)offer();reg.addEventListener('updatefound',()=>reg.installing?.addEventListener('statechange',()=>{if(reg.waiting&&navigator.serviceWorker.controller)offer();}));}).catch(()=>{$('offline-status').textContent='Offline access is unavailable here. Use the hosted HTTPS address to enable it.';});let reloading=false;navigator.serviceWorker.addEventListener('controllerchange',()=>{if(!reloading){reloading=true;location.reload();}});}else{$('offline-status').textContent='This browser does not support offline access.';}
+
+/* ---------- Backups ---------- */
+async function backup(safety=false){
+ if(blocked){let raw='';try{raw=localStorage.getItem(KEY)||'';}catch{}download(raw,`meeting-log-unreadable-${dallasNow().date}.txt`,'text/plain');return;}
+ const at=new Date().toISOString();
+ const content=JSON.stringify({...store,lastBackup:at},null,2);
+ const name=`meeting-log-${safety?'before-import-':''}${dallasNow().date}.json`;
+ // The safety copy runs after a file is read, when the share sheet is no longer allowed, so it always downloads.
+ const result=safety?(download(content,name,'application/json'),'downloaded'):await deliver(content,name,'application/json',{title:'Meeting log backup'});
+ if(result==='cancelled'){status('Backup not saved.');return;}
+ persist({...store,lastBackup:at});reminderSnoozed=false;render();
+ if(!safety)status(result==='shared'?'Backup ready. Save it somewhere safe, such as Files or iCloud Drive.':'Backup downloaded. Keep the file somewhere safe.');
+}
+$('backup').onclick=()=>backup();
+$('reminder-backup').onclick=()=>backup();
+$('reminder-later').onclick=()=>{reminderSnoozed=true;render();};
+$('restore').onclick=()=>$('backup-file').click();
+$('backup-file').onchange=async e=>{
+ const file=e.target.files[0];if(!file)return;
+ try{
+  if(file.size>25000000)throw Error('This backup is too large (maximum 25 MB).');
+  const incoming=validateStore(JSON.parse(await file.text()));
+  if(!confirm(`Merge ${incoming.records.length} backup records? Matching IDs keep the most recently changed version. A safety backup will download first.`))return;
+  await backup(true);
+  if(blocked){if(!confirm('Existing saved data is unreadable. A raw safety copy was downloaded. Replace it with this validated backup?'))return;blocked=false;}
+  if(persist(mergeStores(store,incoming))){render();status('Backup merged successfully.');}
+ }catch(err){status(`Import failed: ${err.message}`,{sticky:true});}
+ finally{e.target.value='';}
+};
+
+/* ---------- Reports ---------- */
+function report(){
+ const scope=$('history-scope').value,now=dallasNow();
+ if(scope==='weeks'){
+  const weeks=weekSummaries();
+  return {scope,slug:'weekly-summary',range:'Week-by-week summary (Monday–Sunday)',
+   summary:`${weeks.length} weeks · ${weeks.filter(w=>w.status==='met').length} met · ${weeks.filter(w=>w.status==='missed').length} missed · goal ${GOAL} per week`,
+   columns:['Week (Mon–Sun)','Counted meetings','Logged meetings','Status'],
+   rows:weeks.map(w=>[weekLabel(w.week),`${w.counted} of ${GOAL}`,String(w.logged),STATUS_LABEL[w.status]]),
+   csv:[['Week starting','Week ending','Counted meetings','Logged meetings','Weekly goal','Status'],...weeks.map(w=>[w.week,shiftDate(w.week,6),w.counted,w.logged,GOAL,STATUS_LABEL[w.status]])],
+   lines:weeks.map(w=>`${weekLabel(w.week)}: ${w.counted} of ${GOAL} · ${STATUS_LABEL[w.status]}`)};
+ }
+ const records=historyRecords(),counted=records.filter(countsToward).length,week=weekStart(historyDate);
+ const chronological=[...records].reverse();
+ return {scope,slug:scope==='all'?'all':`week-of-${week}`,
+  range:scope==='all'?'All logged attendance':`Monday ${fmt(week)} – Sunday ${fmt(shiftDate(week,6))}`,
+  summary:`${records.length} logged · ${counted} counted toward weekly goals`+(scope==='week'?` · ${counted} of ${GOAL} · ${STATUS_LABEL[weekStatus(week,counted,now)]}`:''),
+  columns:['Date / time','Meeting / location','Goal','Recorded / changed'],
+  rows:chronological.map(r=>[`${fmt(r.date)} ${timeLabel(r.time)}`,[r.title,kindLabel(r),place(r),r.notes].filter(Boolean).join('\n'),countsToward(r)?'Counts':'Not counted',`Recorded: ${dallasStamp(r.createdAt)}\nChanged: ${dallasStamp(r.updatedAt)}`]),
+  csv:[['Meeting date','Start time (Dallas)','Meeting','Location','Meeting type','Counts toward goal','Notes','Recorded at','Last changed at'],...chronological.map(r=>[r.date,r.time,r.title,place(r),kindLabel(r),countsToward(r)?'Yes':'No',r.notes,r.createdAt,r.updatedAt])],
+  lines:chronological.map(r=>`${fmt(r.date,{weekday:'short',month:'short',day:'numeric'})} ${timeLabel(r.time)} — ${r.title} (${kindLabel(r)})${countsToward(r)?'':' · not counted'}`)};
+}
+function reportNode(rep){
+ const area=document.createElement('div');
+ area.append(node('h1','Personal meeting attendance record'),node('p','Dallas 24 Hour Club · Self-reported attendance · All meeting times in America/Chicago'),node('p',rep.range),node('p',rep.summary));
+ const table=node('table'),head=node('tr');
+ for(const h of rep.columns)head.append(node('th',h));
+ table.append(head);
+ for(const row of rep.rows){const tr=node('tr');for(const cell of row)tr.append(node('td',cell));table.append(tr);}
+ area.append(table,node('p',`Generated ${dallasStamp(new Date().toISOString())} Dallas time. Entries are personally recorded and have not been independently verified.`));
+ return area;
+}
+$('print-report').onclick=()=>{$('print-area').replaceChildren(...reportNode(report()).childNodes);window.print();};
+$('export-csv').onclick=()=>{
+ const rep=report();
+ const quote=v=>'"'+String(v).replace(/^[=+@\-\t\r]/,"'$&").replaceAll('"','""')+'"';
+ deliver('﻿'+rep.csv.map(row=>row.map(quote).join(',')).join('\r\n'),`meeting-attendance-${rep.slug}.csv`,'text/csv;charset=utf-8',{title:'Meeting attendance (CSV)'});
+};
+$('share-report').onclick=async()=>{
+ const rep=report();
+ const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meeting attendance · ${rep.range}</title><style>body{font-family:Arial,sans-serif;color:#111;margin:24px;font-size:14px}h1{font-size:22px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;text-align:left;padding:8px;vertical-align:top;white-space:pre-line}th{background:#eee}</style></head><body>${reportNode(rep).innerHTML}</body></html>`;
+ const text=`Meeting attendance — ${rep.range}\n${rep.summary}\n\n${rep.lines.join('\n')}`;
+ const result=await deliver(html,`meeting-attendance-${rep.slug}.html`,'text/html',{title:'Meeting attendance',text});
+ if(result==='downloaded')status('Report downloaded. Open it to print or attach it to an email.');
+};
+
+/* ---------- Other tabs, timers, app updates ---------- */
+window.addEventListener('storage',e=>{
+ if(e.key===PHASE_KEY||e.key===null){phase=e.key===null?'one':e.newValue==='two'?'two':'one';$('entry-dialog').close();setView('schedule');}
+ if(e.key===KEY||e.key===null){try{store=e.newValue?validateStore(JSON.parse(e.newValue)):emptyStore();blocked=false;render();status('Records refreshed from another tab.');}catch{blocked=true;status('Saved data changed but could not be read. Saving is paused.',{sticky:true});}}
+});
+window.addEventListener('online',render);window.addEventListener('offline',render);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){render();checkForUpdates();}});
+setInterval(()=>{if(!$('entry-dialog').open&&!$('phase-dialog').open)render();},15000);
+render();
+if(phase==='two')requestPersistence();
+if(blocked)status('Saved data could not be read. Saving is paused to protect it. Download a safety copy using Backups, then restore a valid backup.',{sticky:true});
+
+function showUpdate(message,label,action){
+ $('update-text').textContent=message;$('update-action').textContent=label;$('update-action').onclick=action;$('update-banner').hidden=false;
+}
+let swReg=null,lastUpdateCheck=0;
+function checkForUpdates(){
+ if(!swReg||!navigator.onLine||Date.now()-lastUpdateCheck<30*60*1000)return;
+ lastUpdateCheck=Date.now();
+ navigator.serviceWorker.controller?.postMessage('CHECK_FOR_UPDATES');
+ swReg.update().catch(()=>{});
+}
+if('serviceWorker' in navigator){
+ const hadController=!!navigator.serviceWorker.controller;
+ navigator.serviceWorker.register('./sw.js').then(async reg=>{
+  swReg=reg;
+  await navigator.serviceWorker.ready;
+  $('offline-status').textContent='Offline access is ready on this device.';
+  const applyWaiting=()=>reg.waiting?.postMessage('SKIP_WAITING');
+  const offer=()=>{$('update').hidden=false;$('update').onclick=applyWaiting;showUpdate('An app update is ready.','Load update',applyWaiting);};
+  if(reg.waiting)offer();
+  reg.addEventListener('updatefound',()=>reg.installing?.addEventListener('statechange',()=>{if(reg.waiting&&navigator.serviceWorker.controller)offer();}));
+  checkForUpdates();
+ }).catch(()=>{$('offline-status').textContent='Offline installation needs a hosted HTTPS address.';});
+ navigator.serviceWorker.addEventListener('message',e=>{if(e.data==='APP_UPDATED')showUpdate('The schedule or app was updated.','Reload',()=>location.reload());});
+ // Reload once when a new version takes over, but not on the very first install.
+ let reloading=false;
+ navigator.serviceWorker.addEventListener('controllerchange',()=>{if(hadController&&!reloading){reloading=true;location.reload();}});
+}
