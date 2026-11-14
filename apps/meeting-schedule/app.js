@@ -3,6 +3,7 @@ import {KEY,emptyStore,validateStore,mergeStores} from './storage.js';
 
 const $=id=>document.getElementById(id);
 const PHASE_KEY='d24-resident-phase-v1';
+const SOBRIETY_KEY='d24-sobriety-date-v1';
 const CLUB='Dallas 24 Hour Club';
 const HOUSE=/house meeting/i;
 const GOAL=WEEKLY_GOAL;
@@ -34,6 +35,9 @@ let store=emptyStore(),blocked=false;
 try{const raw=localStorage.getItem(KEY);if(raw)store=validateStore(JSON.parse(raw));}catch{blocked=true;}
 let today=dallasNow().date,selected=today,historyDate=today,view='schedule';
 let reminderSnoozed=false;
+const isIsoDate=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&dateFor(v).toISOString().slice(0,10)===v;
+let sobrietyDate=null;
+try{const v=localStorage.getItem(SOBRIETY_KEY);if(isIsoDate(v))sobrietyDate=v;}catch{}
 
 /* ---------- DOM helpers ---------- */
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -330,6 +334,7 @@ function render(){
  renderSchedule(now,tracking,next,nextDay);
  if(tracking)renderHistory(now);
 
+ renderSobriety(now);
  $('backup-info').textContent=store.lastBackup?`Last backup: ${dallasStamp(store.lastBackup)} Dallas time. Keep the file somewhere safe.`:'No backup saved yet.';
  $('connection').classList.toggle('offline',!navigator.onLine);
  $('connection').textContent=navigator.onLine?(tracking?'Saved on device':'Daily schedule'):(tracking?'Offline · saved on device':'Offline');
@@ -379,6 +384,39 @@ function wireCalendar({feedFile,subscribe,google,download:downloadButton,build,f
 }
 wireCalendar({feedFile:'phase-one-mandatory.ics',subscribe:'calendar-subscribe',google:'calendar-google',download:'calendar-download',build:phaseOneMandatoryCalendar,fileName:'phase-one-mandatory-meetings.ics',done:'Calendar file downloaded. Open it to add the meetings to your calendar.'});
 wireCalendar({feedFile:'weekly-checkin.ics',subscribe:'checkin-cal-subscribe',google:'checkin-cal-google',download:'checkin-cal-download',build:weeklyCheckinCalendar,fileName:'weekly-check-in-reminder.ics',done:'Calendar file downloaded. Open it and choose Add All to get the Sunday reminder.',leadWithGoogle:false});
+
+/* ---------- Sobriety date ---------- */
+// Days since the sobriety date, counted on Dallas calendar dates.
+const daysBetween=(from,to)=>Math.round((dateFor(to)-dateFor(from))/864e5);
+function soberMilestone(start,today,days){
+ if(days===30||days===60||days===90)return `${days} days today`;
+ const [sy,sm,sd]=start.split('-').map(Number),[ty,tm,td]=today.split('-').map(Number);
+ if(sd!==td)return '';
+ const months=(ty-sy)*12+(tm-sm);
+ if(months>0&&months%12===0)return `${months/12} year${months===12?'':'s'} today`;
+ return [6,9,18].includes(months)?`${months} months today`:'';
+}
+function renderSobriety(now){
+ const el=$('sobriety'),input=$('sobriety-date');
+ input.max=now.date;setValue(input,sobrietyDate||'');
+ $('sobriety-clear').hidden=!sobrietyDate;
+ if(!sobrietyDate||sobrietyDate>now.date){el.hidden=true;return;}
+ const days=daysBetween(sobrietyDate,now.date),milestone=days?soberMilestone(sobrietyDate,now.date,days):'';
+ el.hidden=false;el.classList.toggle('milestone',!!milestone);
+ $('sobriety-count').textContent=days?`${days.toLocaleString('en-US')} day${days===1?'':'s'}`:'Starts today';
+ $('sobriety-label').textContent=milestone||(days?'sober':'sobriety date');
+ el.title=`Sober since ${fmt(sobrietyDate,{month:'long',day:'numeric',year:'numeric'})}`;
+}
+function saveSobriety(value){
+ $('sobriety-error').textContent='';
+ if(value&&(!isIsoDate(value)||value>dallasNow().date)){$('sobriety-error').textContent='Choose today or an earlier date.';return;}
+ try{if(value)localStorage.setItem(SOBRIETY_KEY,value);else localStorage.removeItem(SOBRIETY_KEY);}
+ catch{$('sobriety-error').textContent='Could not save on this device. Check browser storage and try again.';return;}
+ sobrietyDate=value||null;render();
+ status(value?'Sobriety date saved.':'Sobriety date cleared.');
+}
+$('sobriety-date').onchange=e=>saveSobriety(e.target.value);
+$('sobriety-clear').onclick=()=>{$('sobriety-date').value='';saveSobriety('');};
 
 /* ---------- Weekly check-in ---------- */
 const checkinFor=week=>store.checkins?.[week]||{sheet:null,addon:null};
@@ -492,6 +530,7 @@ $('share-report').onclick=async()=>{
 
 /* ---------- Other tabs, timers, app updates ---------- */
 window.addEventListener('storage',e=>{
+ if(e.key===SOBRIETY_KEY||e.key===null){sobrietyDate=isIsoDate(e.newValue)?e.newValue:null;render();}
  if(e.key===PHASE_KEY||e.key===null){phase=e.key===null?'one':e.newValue==='two'?'two':'one';$('entry-dialog').close();setView('schedule');}
  if(e.key===KEY||e.key===null){try{store=e.newValue?validateStore(JSON.parse(e.newValue)):emptyStore();blocked=false;render();status('Records refreshed from another tab.');}catch{blocked=true;status('Saved data changed but could not be read. Saving is paused.',{sticky:true});}}
 });
