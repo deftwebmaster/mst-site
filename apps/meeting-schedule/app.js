@@ -398,7 +398,10 @@ function soberMilestone(start,today,days){
 }
 function renderSobriety(now){
  const el=$('sobriety'),input=$('sobriety-date');
- input.max=now.date;setValue(input,sobrietyDate||'');
+ input.max=now.date;
+ // Leave a picked-but-unsaved date alone until Save or Clear.
+ if(!input.dataset.dirty)setValue(input,sobrietyDate||'');
+ $('sobriety-save').disabled=!input.value||input.value===sobrietyDate;
  $('sobriety-clear').hidden=!sobrietyDate;
  if(!sobrietyDate||sobrietyDate>now.date){el.hidden=true;return;}
  const days=daysBetween(sobrietyDate,now.date),milestone=days?soberMilestone(sobrietyDate,now.date,days):'';
@@ -412,10 +415,13 @@ function saveSobriety(value){
  if(value&&(!isIsoDate(value)||value>dallasNow().date)){$('sobriety-error').textContent='Choose today or an earlier date.';return;}
  try{if(value)localStorage.setItem(SOBRIETY_KEY,value);else localStorage.removeItem(SOBRIETY_KEY);}
  catch{$('sobriety-error').textContent='Could not save on this device. Check browser storage and try again.';return;}
- sobrietyDate=value||null;render();
+ sobrietyDate=value||null;delete $('sobriety-date').dataset.dirty;render();
  status(value?'Sobriety date saved.':'Sobriety date cleared.');
 }
-$('sobriety-date').onchange=e=>saveSobriety(e.target.value);
+const sobrietyEdited=()=>{const input=$('sobriety-date');input.dataset.dirty='1';$('sobriety-error').textContent='';$('sobriety-save').disabled=!input.value||input.value===sobrietyDate;};
+$('sobriety-date').oninput=sobrietyEdited;
+$('sobriety-date').onchange=sobrietyEdited;
+$('sobriety-save').onclick=()=>saveSobriety($('sobriety-date').value);
 $('sobriety-clear').onclick=()=>{$('sobriety-date').value='';saveSobriety('');};
 
 /* ---------- Weekly check-in ---------- */
