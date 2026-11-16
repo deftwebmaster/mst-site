@@ -1,10 +1,14 @@
-// Bump VERSION when icons or the scan image change. Edits to the HTML, CSS, JS, and
-// manifest are picked up automatically: the app checks for them when it opens online.
-const VERSION='v8';
+// LEGACY (MattST) — keep this file at ./sw.js with the same cache PREFIX so existing
+// Home Screen installs keep updating. Bump VERSION when icons or the scan image change.
+// Edits to the HTML, CSS, JS, and manifest are picked up automatically when the app opens online.
+// v9: schedule-only version with the "moved to ManicZone" banner.
+const VERSION='v9';
 const PREFIX='daily-meetings-'+encodeURIComponent(self.registration.scope)+'-';
 const CACHE=PREFIX+VERSION;
 const CORE=['./','./index.html','./style.css','./app.js','./schedule.js','./storage.js','./manifest.webmanifest'];
-const STATIC=['./icon.svg','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-any-192.png','./icons/icon-any-512.png','./schedule-scan.jpeg'];
+const STATIC=['./icon.svg','./icons/icon-192.png','./icons/icon-512.png','./icons/icon-any-192.png','./icons/icon-any-512.png','./icons/new-app-icon.png','./schedule-scan.jpeg'];
+// storage.js is no longer used by this version but must stay deployed: older service workers still
+// on residents' phones re-download every CORE file and skip the update entirely if any one is missing.
 
 // Safari won't open a page from a saved response that came through a redirect (some hosts
 // redirect index.html to /), so store a plain copy of anything that was redirected.
@@ -17,6 +21,8 @@ self.addEventListener('install',event=>event.waitUntil((async()=>{
  const cache=await caches.open(CACHE);
  const all=[...CORE,...STATIC],responses=await Promise.all(all.map(u=>fetchClean(u,'reload')));
  await Promise.all(responses.map((res,i)=>cache.put(all[i],res)));
+ // Take over right away so existing installs see the migration banner without an extra tap.
+ await self.skipWaiting();
 })()));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith(PREFIX)&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 
